@@ -132,11 +132,12 @@ io.on('connection', (socket) => {
         console.log(`👋 ${socket.id} покинул комнату: ${room}`);
     });
     
-    // Клиент отправил сообщение
+       // Клиент отправил сообщение
     socket.on('send-message', (data) => {
-        const { room, user, text, avatar } = data;
+        const { room, user, text, avatar, image } = data;
         
-        if (!room || !user || !text) return;
+        if (!room || !user) return;
+        if (!text && !image) return; // Должно быть хоть что-то
         
         if (!messages[room]) {
             messages[room] = [];
@@ -145,19 +146,20 @@ io.on('connection', (socket) => {
         const message = {
             id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
             user: user,
-            text: text,
+            text: text || '',
             avatar: avatar || user[0],
+            image: image || null, // ← ДОБАВИЛИ картинку
             time: Date.now()
         };
         
         messages[room].push(message);
         
-        // Отправляем всем в комнате, включая отправителя
+        // Отправляем всем в комнате
         io.to(room).emit('new-message', message);
         
-        console.log(`💬 [${room}] ${user}: ${text}`);
+        const preview = text ? text.substring(0, 30) : '[картинка]';
+        console.log(`💬 [${room}] ${user}: ${preview}`);
     });
-    
     // Отключение
     socket.on('disconnect', () => {
         console.log('🔴 Отключился клиент:', socket.id);
