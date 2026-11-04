@@ -15,6 +15,7 @@ const { createSocketLayer } = require('./src/sockets');
 const { AccountStore } = require('./src/accounts');
 const { DmStore } = require('./src/dm');
 const { GroupStore, AdReactions } = require('./src/groups');
+const { ListingStore } = require('./src/listings');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -36,6 +37,8 @@ async function start(env = process.env, logger = console) {
     await groups.init();
     const adReacts = new AdReactions({ dataDir: cfg.dataDir, logger });
     await adReacts.init();
+    const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    await listings.init();
 
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
@@ -50,7 +53,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, limiters, io, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

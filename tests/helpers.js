@@ -29,7 +29,7 @@ async function makeStore(cfg, extra = {}) {
 
 function makeIo() {
     const emitted = [];
-    return { emitted, to(room) { return { emit(ev, payload) { emitted.push({ room, ev, payload }); } }; } };
+    return { emitted, emit(ev, payload) { emitted.push({ room: '*', ev, payload }); }, to(room) { return { emit(ev, payload) { emitted.push({ room, ev, payload }); } }; } };
 }
 
 let sid = 0;

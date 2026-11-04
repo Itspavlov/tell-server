@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, limiters, io, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -147,6 +147,52 @@ function createHandlers({ cfg, store, admin, accounts, limiters, io, logger = co
         res.json({ ok: true, user: { id: u.id, name: u.name } });
     }
 
+    // ---------- объявления ----------
+    const listingFail = (res, r) => res.status(
+        r.code === 'LISTING_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 :
+        (r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL') ? 503 : 400
+    ).json({ ok: false, code: r.code, message: r.message });
+
+    function listingsList(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const r = limiters.history.hit(ipOf(req));
+        if (!r.ok) return limited(res, r);
+        res.json({ ok: true, listings: listings.list() });
+    }
+
+    function listingGet(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const r = limiters.history.hit(ipOf(req));
+        if (!r.ok) return limited(res, r);
+        const l = listings.get(req.params.id);
+        if (!l) return res.status(404).json({ ok: false, code: 'LISTING_NOT_FOUND' });
+        res.json({ ok: true, listing: l });
+    }
+
+    async function listingSave(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const user = accounts && accounts.authenticate(bearer(req));
+        if (!user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
+        const rl = limiters.listingSave.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await listings.save(user, req.body);
+        if (!r.ok) return listingFail(res, r);
+        io.emit('listing-changed', { id: r.listing.id });
+        res.json({ ok: true, listing: r.listing });
+    }
+
+    async function listingDelete(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const user = accounts && accounts.authenticate(bearer(req));
+        if (!user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
+        const rl = limiters.listingSave.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await listings.remove(user, req.params.id);
+        if (!r.ok) return listingFail(res, r);
+        io.emit('listing-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
     function notFound(req, res) { res.status(404).json({ error: 'Not found' }); }
 
     function onError(err, req, res, next) { // eslint-disable-line no-unused-vars
@@ -158,15 +204,15 @@ function createHandlers({ cfg, store, admin, accounts, limiters, io, logger = co
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 
-    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, notFound, onError };
+    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, limiters, io, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, limiters, io, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, limiters, io, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -185,6 +231,10 @@ function createApp({ express, cors, cfg, store, admin, accounts, limiters, io, l
     app.post('/api/auth/login', h.login);
     app.post('/api/auth/logout', h.logout);
     app.get('/api/auth/me', h.me);
+    app.get('/api/listings', h.listingsList);
+    app.get('/api/listings/:id', h.listingGet);
+    app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);
+    app.delete('/api/listings/:id', h.listingDelete);
     app.use(h.notFound);
     app.use(h.onError);
     return app;

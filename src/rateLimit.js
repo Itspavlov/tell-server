@@ -57,7 +57,8 @@ function createLimiters(rates, now) {
         loginName: make(rates.loginName),
         groupCreate: make(rates.groupCreate),
         groupJoin: make(rates.groupJoin),
-        groupInvite: make(rates.groupInvite)
+        groupInvite: make(rates.groupInvite),
+        listingSave: make(rates.listingSave)
     };
 }
 

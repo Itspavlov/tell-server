@@ -73,7 +73,8 @@ function loadConfig(env = process.env) {
             maxStoreBytes: intEnv(env, 'MAX_STORE_MB', 150, 10, 2000) * 1024 * 1024,
             maxConnectionsPerIp: 25,
             dupWindowMs: 5000,
-            violationLimit: 8
+            violationLimit: 8,
+            maxListingsBytes: intEnv(env, 'MAX_LISTINGS_MB', 100, 5, 1000) * 1024 * 1024
         }),
 
         rates: Object.freeze({
@@ -92,7 +93,8 @@ function loadConfig(env = process.env) {
             loginName: { windowMs: 900_000, max: 10 },
             groupCreate: { windowMs: 3_600_000, max: 10 },
             groupJoin: { windowMs: 60_000, max: 10 },
-            groupInvite: { windowMs: 60_000, max: 20 }
+            groupInvite: { windowMs: 60_000, max: 20 },
+            listingSave: { windowMs: 3_600_000, max: 40 }
         })
     });
 }
