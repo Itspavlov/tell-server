@@ -119,7 +119,7 @@ class ListingStore {
             image: cover || (full && a.photos[0]) || '',
             photos: full ? a.photos : (cover ? [cover] : []),
             thumb: cover, partial: !full, photoCount: a.photos.length,
-            views: 0, isVerified: false, isUrgent: false,
+            views: 0, isVerified: !!(u && u.verified), isUrgent: false,
             facts: a.facts, amenities: a.amenities, terms: a.terms, rules: a.rules,
             coords: a.coords, beach: a.beach, busy: a.busy, form: full ? a.form : undefined,
             since: a.since,
@@ -142,6 +142,7 @@ class ListingStore {
     }
 
     async save(user, payload) {
+        if (!user.verified) return fail('NOT_VERIFIED');
         const c = cleanListing(payload && payload.ad, payload && payload.profile);
         if (!c.ok) return c;
         const id = payload && typeof payload.id === 'string' ? payload.id : null;

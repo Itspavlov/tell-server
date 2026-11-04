@@ -144,12 +144,44 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         if (!accounts) return res.status(404).json({ error: 'Not found' });
         const u = accounts.authenticate(bearer(req));
         if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
-        res.json({ ok: true, user: { id: u.id, name: u.name } });
+        res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified } });
+    }
+
+    // ---------- проверка хозяев ----------
+    async function verifyRequest(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.verifyRequest.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const note = req.body && typeof req.body.note === 'string' ? req.body.note : '';
+        const r = await accounts.requestVerification(u.id, note);
+        if (!r.ok) return res.status(r.code === 'AUTH_REQUIRED' ? 401 : 503).json({ ok: false, code: r.code });
+        res.json({ ok: true, already: !!r.already });
+    }
+
+    async function adminVerify(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (!(await requireAdmin(req, res, 'verify', { target: String(b.name || '').slice(0, 40) }))) return;
+        if (typeof b.name !== 'string' || typeof b.verified !== 'boolean') {
+            return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD', message: 'Нужны name и verified (true/false)' });
+        }
+        const ok = await accounts.setVerified(nameKey(b.name), b.verified);
+        if (!ok) return res.status(404).json({ ok: false, code: 'NO_USER' });
+        await admin.audit('verify', { target: b.name.slice(0, 40), verified: b.verified, ip: ipOf(req) });
+        res.json({ ok: true });
+    }
+
+    async function adminVerifyRequests(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'verify_requests', {}))) return;
+        res.json({ ok: true, requests: accounts.listVerifyRequests() });
     }
 
     // ---------- объявления ----------
     const listingFail = (res, r) => res.status(
-        r.code === 'LISTING_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 :
+        r.code === 'LISTING_NOT_FOUND' ? 404 : (r.code === 'NOT_OWNER' || r.code === 'NOT_VERIFIED') ? 403 :
         (r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL') ? 503 : 400
     ).json({ ok: false, code: r.code, message: r.message });
 
@@ -204,7 +236,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 
-    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
+    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, logger }) {
@@ -226,10 +258,14 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, limit
     app.get('/api/messages/:room', h.history);
     app.delete('/api/messages/:room', h.clearRoom);
     app.get('/api/admin/export', h.exportAll);
+    app.use('/api/admin', express.json({ limit: '2kb' }));
+    app.post('/api/admin/verify', h.adminVerify);
+    app.get('/api/admin/verify-requests', h.adminVerifyRequests);
     app.use('/api/auth', express.json({ limit: '2kb' }));
     app.post('/api/auth/register', h.register);
     app.post('/api/auth/login', h.login);
     app.post('/api/auth/logout', h.logout);
+    app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/:id', h.listingGet);

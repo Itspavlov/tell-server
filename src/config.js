@@ -94,7 +94,8 @@ function loadConfig(env = process.env) {
             groupCreate: { windowMs: 3_600_000, max: 10 },
             groupJoin: { windowMs: 60_000, max: 10 },
             groupInvite: { windowMs: 60_000, max: 20 },
-            listingSave: { windowMs: 3_600_000, max: 40 }
+            listingSave: { windowMs: 3_600_000, max: 40 },
+            verifyRequest: { windowMs: 3_600_000, max: 5 }
         })
     });
 }

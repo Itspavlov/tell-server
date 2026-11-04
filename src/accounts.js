@@ -44,7 +44,7 @@ class AccountStore {
         this.logger.info?.(`Аккаунты: ${this.byKey.size}`);
     }
 
-    _public(u) { return { id: u.id, name: u.name, key: u.key }; }
+    _public(u) { return { id: u.id, name: u.name, key: u.key, verified: !!u.verified }; }
     findByKey(key) { const u = this.byKey.get(key); return u ? this._public(u) : null; }
     byId(id) { const u = this.data.users[id]; return u ? this._public(u) : null; }
     isNameTaken(key) { return this.byKey.has(key); }
@@ -93,7 +93,7 @@ class AccountStore {
             this.logger.error?.(`Аккаунт не сохранён: ${e.code || e.message}`);
             return fail('SERVER_ERROR');
         }
-        return { ok: true, token, user: { id: user.id, name: user.name } };
+        return { ok: true, token, user: { id: user.id, name: user.name, verified: false } };
     }
 
     async login(rawName, password) {
@@ -107,7 +107,33 @@ class AccountStore {
         if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return fail('BAD_CREDENTIALS');
         const token = await this._newSession(user.id);
         try { await this.file.save(this.data); } catch (e) { return fail('SERVER_ERROR'); }
-        return { ok: true, token, user: { id: user.id, name: user.name } };
+        return { ok: true, token, user: { id: user.id, name: user.name, verified: !!user.verified } };
+    }
+
+    // Проверенный хозяин: статус выдаёт только администратор
+    async setVerified(key, value) {
+        const u = this.byKey.get(key);
+        if (!u) return false;
+        const prev = !!u.verified;
+        u.verified = !!value;
+        if (u.verified) delete u.verifyRequest;
+        try { await this.file.save(this.data); } catch (e) { u.verified = prev; return false; }
+        return true;
+    }
+
+    async requestVerification(userId, note) {
+        const u = this.data.users[userId];
+        if (!u) return fail('AUTH_REQUIRED');
+        if (u.verified) return { ok: true, already: true };
+        const prev = u.verifyRequest;
+        u.verifyRequest = { note: String(note || '').slice(0, 500), time: this.now() };
+        try { await this.file.save(this.data); } catch (e) { u.verifyRequest = prev; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true };
+    }
+
+    listVerifyRequests() {
+        return Object.values(this.data.users).filter(u => u.verifyRequest && !u.verified)
+            .map(u => ({ name: u.name, note: u.verifyRequest.note, time: u.verifyRequest.time }));
     }
 
     authenticate(token) {

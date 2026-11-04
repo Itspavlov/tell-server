@@ -38,10 +38,17 @@ class DmStore {
         return c && this._isParticipant(user, c) ? c : null;
     }
 
+    // сообщения, которые пользователь ещё не «удалял у себя»
+    _visible(user, c) {
+        const cut = (c.hidden && c.hidden[user.id]) || 0;
+        return cut ? c.messages.filter(m => m.time > cut) : c.messages;
+    }
+
     _summary(user, c) {
         const iAmGuest = c.guestId === user.id;
         const other = iAmGuest ? c.ownerName : (this.accounts.byId(c.guestId) || { name: 'Гость' }).name;
-        const last = c.messages[c.messages.length - 1];
+        const vis = this._visible(user, c);
+        const last = vis[vis.length - 1];
         return {
             id: c.id, with: other, adTitle: c.adTitle || '', adId: c.adId || '',
             last: last ? { text: last.text.slice(0, 80), time: last.time, mine: last.from === user.id } : null,
@@ -85,6 +92,7 @@ class DmStore {
     list(user) {
         return Object.values(this.data.convs)
             .filter(c => this._isParticipant(user, c))
+            .filter(c => !(c.hidden && c.hidden[user.id]) || this._visible(user, c).length > 0)
             .map(c => this._summary(user, c))
             .sort((a, b) => b.updated - a.updated);
     }
@@ -92,10 +100,22 @@ class DmStore {
     history(user, convId, { limit = 100, before = null } = {}) {
         const c = this._get(user, convId);
         if (!c) return fail('NO_CONVERSATION');
-        let end = c.messages.length;
-        if (before) { const i = c.messages.findIndex(m => m.id === before); end = i >= 0 ? i : 0; }
+        const vis = this._visible(user, c);
+        let end = vis.length;
+        if (before) { const i = vis.findIndex(m => m.id === before); end = i >= 0 ? i : 0; }
         const start = Math.max(0, end - Math.min(limit, 200));
-        return { ok: true, conv: this._summary(user, c), messages: c.messages.slice(start, end).map(m => this._view(c, m)), hasMore: start > 0 };
+        return { ok: true, conv: this._summary(user, c), messages: vis.slice(start, end).map(m => this._view(c, m)), hasMore: start > 0 };
+    }
+
+    // «Удалить у себя»: собеседник свою копию переписки сохраняет
+    async remove(user, convId) {
+        const c = this._get(user, convId);
+        if (!c) return fail('NO_CONVERSATION');
+        const prev = c.hidden ? { ...c.hidden } : null;
+        c.hidden = { ...(c.hidden || {}), [user.id]: this.now() };
+        try { await this.file.save(this.data); }
+        catch (e) { c.hidden = prev || undefined; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true };
     }
 
     // Возвращает { ok, message, recipients: [id аккаунтов] }

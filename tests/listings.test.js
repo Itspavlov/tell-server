@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { AccountStore } = require('../src/accounts');
+const { AccountStore, nameKey } = require('../src/accounts');
 const { ListingStore } = require('../src/listings');
 const { createHandlers } = require('../src/http');
 const { createAdmin } = require('../src/admin');
@@ -19,8 +19,10 @@ async function setup(over = {}) {
     const io = makeIo();
     const admin = createAdmin({ token: '', dataDir: cfg.dataDir, logger: silent });
     const h = createHandlers({ cfg, store, admin, accounts, listings, limiters: limiters(cfg), io, logger: silent });
-    const reg = async (n) => (await accounts.register(n, PW));
-    return { cfg, accounts, listings, store, io, h, reg };
+    const regRaw = async (n) => (await accounts.register(n, PW));
+    // по умолчанию в тестах владелец уже проверен администратором
+    const reg = async (n) => { const u = await regRaw(n); await accounts.setVerified(nameKey(n), true); return u; };
+    return { cfg, accounts, listings, store, io, h, reg, regRaw };
 }
 const res = () => { const r = { code: 200, body: null }; r.status = c => { r.code = c; return r; }; r.json = b => { r.body = b; return r; }; r.set = () => r; return r; };
 const req = (o = {}) => ({ ip: '4.4.4.4', params: {}, query: {}, headers: {}, body: {}, ...o });
@@ -144,4 +146,70 @@ test('объявления переживают перезапуск; повре
     const bad = new ListingStore({ dataDir: cfg2.dataDir, accounts: acc2, limits: cfg2.limits, logger: silent });
     await assert.rejects(() => bad.init(), (e) => e.code === 'CORRUPT');
     assert.equal(fs.readFileSync(f, 'utf-8'), '{"listings": ');
+});
+
+test('объявление: непроверенный не может разместить; после проверки может, значок виден', async () => {
+    const { h, regRaw, accounts, store } = await setup();
+    const u = await regRaw('Новичок');
+    let r = res(); await h.listingSave(req({ headers: auth(u.token), body: { ad: AD(), profile: PROFILE } }), r);
+    assert.equal(r.code, 403);
+    assert.equal(r.body.code, 'NOT_VERIFIED');
+    assert.equal(await accounts.setVerified(nameKey('Новичок'), true), true);
+    r = res(); await h.listingSave(req({ headers: auth(u.token), body: { ad: AD(), profile: PROFILE } }), r);
+    assert.equal(r.code, 200);
+    assert.equal(r.body.listing.isVerified, true);
+    await store.close();
+});
+
+test('заявка на проверку: сохраняется, видна админу, пропадает после проверки', async () => {
+    const { regRaw, accounts, store } = await setup();
+    const u = await regRaw('Хозяин');
+    assert.equal(nameKey('Хозяин') !== undefined, true);
+    const a = accounts.authenticate(u.token);
+    const r = await accounts.requestVerification(a.id, 'Сдаю квартиру в Анапе, тел. +7…');
+    assert.equal(r.ok, true);
+    assert.equal(accounts.listVerifyRequests().length, 1);
+    assert.equal(accounts.listVerifyRequests()[0].name, 'Хозяин');
+    await accounts.setVerified(nameKey('Хозяин'), true);
+    assert.equal(accounts.listVerifyRequests().length, 0);
+    assert.equal((await accounts.requestVerification(a.id, 'x')).already, true);
+    await store.close();
+});
+
+test('админ: выдача статуса «проверен» только по токену, заявки видны, всё пишется в аудит', async () => {
+    const cfg = makeCfg();
+    const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
+    const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger: silent }); await listings.init();
+    const store = await makeStore(cfg);
+    const TOKEN = 'a'.repeat(40);
+    const admin = createAdmin({ token: TOKEN, dataDir: cfg.dataDir, logger: silent });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, limiters: limiters(cfg), io: makeIo(), logger: silent });
+    const u = await accounts.register('Хозяин', PW);
+    // заявка
+    let r = res(); await h.verifyRequest(req({ headers: auth(u.token), body: { note: 'Сдаю жильё' } }), r);
+    assert.equal(r.code, 200);
+    r = res(); await h.verifyRequest(req({ body: {} }), r);
+    assert.equal(r.code, 401);
+    // без токена админа нельзя
+    r = res(); await h.adminVerifyRequests(req({ headers: { authorization: 'Bearer wrong' } }), r);
+    assert.equal(r.code, 401);
+    r = res(); await h.adminVerify(req({ headers: { authorization: 'Bearer wrong' }, body: { name: 'Хозяин', verified: true } }), r);
+    assert.equal(r.code, 401);
+    assert.equal(accounts.findByKey(nameKey('Хозяин')).verified, false);
+    // по токену
+    r = res(); await h.adminVerifyRequests(req({ headers: { authorization: 'Bearer ' + TOKEN } }), r);
+    assert.equal(r.body.requests.length, 1);
+    r = res(); await h.adminVerify(req({ headers: { authorization: 'Bearer ' + TOKEN }, body: { name: 'хозяин', verified: true } }), r);
+    assert.equal(r.code, 200);
+    assert.equal(accounts.findByKey(nameKey('Хозяин')).verified, true);
+    r = res(); await h.adminVerify(req({ headers: { authorization: 'Bearer ' + TOKEN }, body: { name: 'Нет', verified: true } }), r);
+    assert.equal(r.code, 404);
+    r = res(); await h.adminVerify(req({ headers: { authorization: 'Bearer ' + TOKEN }, body: { name: 'Хозяин' } }), r);
+    assert.equal(r.code, 400);
+    r = res(); h.me(req({ headers: auth(u.token) }), r);
+    assert.equal(r.body.user.verified, true);
+    const log = fs.readFileSync(path.join(cfg.dataDir, 'audit.log'), 'utf-8');
+    assert.ok(log.includes('"action":"verify"'));
+    assert.equal(log.includes(TOKEN), false);
+    await store.close();
 });

@@ -23,7 +23,7 @@ const { cleanAd } = require('./groups');
 
 const KNOWN_EVENTS = new Set([
     'join-room', 'leave-room', 'send-message', 'react',
-    'dm-open', 'dm-list', 'dm-history', 'dm-send',
+    'dm-open', 'dm-list', 'dm-history', 'dm-send', 'dm-delete',
     'group-create', 'group-list', 'group-open', 'group-send', 'group-react',
     'group-invite', 'group-join', 'group-leave', 'ad-reactions', 'ad-react'
 ]);
@@ -82,7 +82,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             return true;
         }
 
-        socket.emit('server-hello', { protocol: 2, user: account ? { id: account.id, name: account.name } : null });
+        socket.emit('server-hello', { protocol: 2, user: account ? { id: account.id, name: account.name, verified: !!account.verified } : null });
 
         socket.onAny((event) => {
             if (!KNOWN_EVENTS.has(event)) violation('unknown-event');
@@ -256,6 +256,17 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             } catch (e) { logger.error?.(`dm-send: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
         });
 
+        const safe = (name, fn) => async (...args) => {
+            const ack = args[args.length - 1];
+            try { await fn(...args); }
+            catch (e) { logger.error?.(`${name}: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
+        };
+
+        socket.on('dm-delete', safe('dm-delete', async (data, ack) => {
+            if (!needAuth(ack)) return;
+            reply(ack, await dms.remove(account, data && data.convId));
+        }));
+
         // ---------------- группы друзей ----------------
         const needGroups = (ack) => {
             if (account && groups) return true;
@@ -265,12 +276,6 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         const tellMembers = (ids, event, payload) => {
             for (const id of new Set(ids)) io.to('user:' + id).emit(event, payload);
         };
-        const safe = (name, fn) => async (...args) => {
-            const ack = args[args.length - 1];
-            try { await fn(...args); }
-            catch (e) { logger.error?.(`${name}: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
-        };
-
         socket.on('group-create', safe('group-create', async (d, ack) => {
             if (!needGroups(ack)) return;
             if (!limiters.groupCreate.hit(account.id).ok) return reply(ack, fail('RATE_LIMITED'));

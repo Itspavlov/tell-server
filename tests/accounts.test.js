@@ -267,3 +267,33 @@ test('личные сообщения: диалог и сообщения пер
     assert.equal(d2.history(user, conv.id).messages[0].text, 'сохрани');
     await store.close();
 });
+
+test('dm-delete: удаляет только у себя, собеседник сохраняет переписку, новое сообщение возвращает диалог', async () => {
+    const { accounts, connect } = await setup();
+    const a = await accounts.register('Анна', PW), b = await accounts.register('Борис', PW);
+    const sa = connect(a.token), sb = connect(b.token);
+    const o = await call(sa, 'dm-open', { ownerName: 'Борис' });
+    assert.equal(o.ok, true, JSON.stringify(o));
+    const convId = o.conv.id;
+    const s1 = await call(sa, 'dm-send', { convId, text: 'привет' });
+    assert.equal(s1.ok, true, JSON.stringify(s1));
+    assert.equal((await call(sa, 'dm-list')).convs.length, 1);
+    const del = await call(sa, 'dm-delete', { convId });
+    assert.equal(del.ok, true);
+    assert.equal((await call(sa, 'dm-list')).convs.length, 0, 'у Анны диалога нет');
+    assert.equal((await call(sb, 'dm-list')).convs.length, 1, 'у Бориса остался');
+    assert.equal((await call(sa, 'dm-delete', { convId: 'nope' })).ok, false);
+    await new Promise(r => setTimeout(r, 5));
+    const s2 = await call(sb, 'dm-send', { convId, text: 'ответ' });
+    assert.equal(s2.ok, true, JSON.stringify(s2));
+    const list = (await call(sa, 'dm-list')).convs;
+    assert.equal(list.length, 1, 'после нового сообщения диалог вернулся');
+    const h = await call(sa, 'dm-history', { convId });
+    assert.deepEqual(h.messages.map(m => m.text), ['ответ'], 'старое не вернулось');
+});
+
+test('dm-delete: без входа нельзя', async () => {
+    const { connect } = await setup();
+    const g = connect(null);
+    assert.equal((await call(g, 'dm-delete', { convId: 'x' })).ok, false);
+});
