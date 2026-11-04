@@ -175,6 +175,26 @@ class ListingStore {
         return { ok: true, listing: this._compose(l, true) };
     }
 
+    // Для модерации: все объявления с владельцами
+    listAll() {
+        return Object.values(this.data.listings).sort((a, b) => b.created - a.created).slice(0, 500).map(l => ({
+            id: l.id, ownerId: l.ownerId, ownerName: l.ownerName, created: l.created, updated: l.updated,
+            title: l.ad && l.ad.title, price: l.ad && l.ad.price, location: l.ad && l.ad.location,
+            thumb: (l.ad && (l.ad.thumb || (l.ad.photos && l.ad.photos[0]))) || '', photos: (l.ad && l.ad.photos || []).length,
+            phone: l.owner && l.owner.phone || ''
+        }));
+    }
+
+    async removeAny(id) {
+        const l = typeof id === 'string' ? this.data.listings[id] : null;
+        if (!l) return fail('LISTING_NOT_FOUND');
+        delete this.data.listings[id];
+        try { await this.file.save(this.data); }
+        catch (e) { this.data.listings[id] = l; return fail('STORE_UNAVAILABLE'); }
+        this.bytes = JSON.stringify(this.data).length;
+        return { ok: true, ownerName: l.ownerName };
+    }
+
     async remove(user, id) {
         const l = typeof id === 'string' ? this.data.listings[id] : null;
         if (!l) return fail('LISTING_NOT_FOUND');

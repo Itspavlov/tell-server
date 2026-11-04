@@ -257,6 +257,43 @@ class MessageStore {
         return { counts: v.reactions, mine: v.mine };
     }
 
+    // Удаление одного сообщения (модерация)
+    async removeMessage(room, id) {
+        if (!this.isReady()) throw new StoreError('STORE_UNAVAILABLE');
+        if (!this.rooms.includes(room)) throw new StoreError('INVALID_ROOM');
+        const list = this.data[room];
+        const i = Array.isArray(list) ? list.findIndex(m => m && m.id === id) : -1;
+        if (i < 0) return false;
+        const [m] = list.splice(i, 1);
+        const undo = () => { list.splice(Math.min(i, list.length), 0, m); };
+        await this._commit(undo);
+        for (const [k, v] of this.recent) if (v.message && v.message.id === id) this.recent.delete(k);
+        return true;
+    }
+
+    // Удаление всего, что написал автор с таким именем (спам). Возвращает [{room,id}]
+    async removeByUser(name) {
+        if (!this.isReady()) throw new StoreError('STORE_UNAVAILABLE');
+        const want = String(name || '').trim().toLowerCase();
+        if (!want) return [];
+        const removed = [], backup = {};
+        for (const room of this.rooms) {
+            const list = this.data[room] || [];
+            const keep = list.filter(m => !(m && typeof m.user === 'string' && m.user.trim().toLowerCase() === want));
+            if (keep.length !== list.length) {
+                backup[room] = list;
+                for (const m of list) if (!keep.includes(m)) removed.push({ room, id: m.id });
+                this.data[room] = keep;
+            }
+        }
+        if (!removed.length) return [];
+        const undo = () => { for (const r of Object.keys(backup)) this.data[r] = backup[r]; };
+        await this._commit(undo);
+        const ids = new Set(removed.map(r => r.id));
+        for (const [k, v] of this.recent) if (v.message && ids.has(v.message.id)) this.recent.delete(k);
+        return removed;
+    }
+
     // Очистка комнаты (только для администратора)
     async clear(room) {
         if (!this.isReady()) throw new StoreError('STORE_UNAVAILABLE');

@@ -103,6 +103,7 @@ class AccountStore {
         // для несуществующего имени тоже считаем хеш — время ответа не выдаёт, есть ли такой аккаунт
         const hash = await this._hash(password, user ? user.salt : this.dummy.salt);
         if (!user) return fail('BAD_CREDENTIALS');
+        if (user.banned) return fail('BANNED');
         const a = Buffer.from(hash, 'hex'), b = Buffer.from(user.hash, 'hex');
         if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return fail('BAD_CREDENTIALS');
         const token = await this._newSession(user.id);
@@ -140,7 +141,45 @@ class AccountStore {
         if (typeof token !== 'string' || token.length !== 64 || !/^[0-9a-f]+$/.test(token)) return null;
         const s = this.data.sessions[sha(token)];
         if (!s || s.exp <= this.now()) return null;
+        const u = this.data.users[s.userId];
+        if (!u || u.banned) return null;
         return this.byId(s.userId);
+    }
+
+    // ----- модерация -----
+    listUsers(query) {
+        const q = String(query || '').trim().toLowerCase();
+        return Object.values(this.data.users)
+            .filter(u => !q || u.name.toLowerCase().includes(q))
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 200)
+            .map(u => ({ id: u.id, name: u.name, verified: !!u.verified, banned: !!u.banned, created: u.createdAt || 0,
+                         request: u.verifyRequest ? { note: u.verifyRequest.note, time: u.verifyRequest.time } : null }));
+    }
+
+    // Блокировка: все сессии сбрасываются, вход закрыт
+    async setBanned(key, value) {
+        const u = this.byKey.get(key);
+        if (!u) return false;
+        const prev = !!u.banned, prevSessions = { ...this.data.sessions };
+        u.banned = !!value;
+        if (u.banned) for (const [h, s] of Object.entries(this.data.sessions)) if (s.userId === u.id) delete this.data.sessions[h];
+        try { await this.file.save(this.data); }
+        catch (e) { u.banned = prev; this.data.sessions = prevSessions; return false; }
+        return true;
+    }
+
+    async rejectVerification(key) {
+        const u = this.byKey.get(key);
+        if (!u || !u.verifyRequest) return false;
+        const prev = u.verifyRequest;
+        delete u.verifyRequest;
+        try { await this.file.save(this.data); } catch (e) { u.verifyRequest = prev; return false; }
+        return true;
+    }
+
+    stats() {
+        const us = Object.values(this.data.users);
+        return { users: us.length, verified: us.filter(u => u.verified).length, banned: us.filter(u => u.banned).length, requests: us.filter(u => u.verifyRequest && !u.verified).length };
     }
 
     async logout(token) {

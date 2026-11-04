@@ -72,7 +72,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         const ip = ipOf(req);
         const r = limiters.admin.hit(ip);
         if (!r.ok) { limited(res, r); return false; }
+        // подбор токена: после 10 неудач с одного адреса вход закрывается на 15 минут
+        const blocked = limiters.adminFail.peek(ip);
+        if (!blocked.ok) { limited(res, blocked); return false; }
         if (!admin.authorize(req.headers && req.headers.authorization)) {
+            limiters.adminFail.hit(ip);
             await admin.audit('admin_denied', { attempted: action, ip, ...extra });
             res.status(401).json({ error: 'Unauthorized' });
             return false;
@@ -179,6 +183,118 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         res.json({ ok: true, requests: accounts.listVerifyRequests() });
     }
 
+    // ---------- модерация (панель /admin) ----------
+    const trunc = (v, n) => String(v == null ? '' : v).slice(0, n);
+
+    async function adminOverview(req, res) {
+        if (!(await requireAdmin(req, res, 'overview', {}))) return;
+        res.json({ ok: true, rooms: store.stats().rooms, users: accounts ? accounts.stats() : null,
+                   listings: listings ? listings.listAll().length : 0 });
+    }
+
+    async function adminMessages(req, res) {
+        if (!(await requireAdmin(req, res, 'view_messages', { room: trunc(req.params.room, 20) }))) return;
+        if (!isValidRoom(req.params.room, cfg.rooms)) return res.status(404).json({ error: 'Комната не найдена' });
+        const limit = Math.min(Math.max(parseInt(req.query && req.query.limit, 10) || 100, 1), 200);
+        const h = store.getHistory(req.params.room, { limit, before: (req.query && req.query.before) || null });
+        res.json({ ok: true, ...h });
+    }
+
+    async function adminDeleteMessage(req, res) {
+        const { room, id } = req.params;
+        if (!(await requireAdmin(req, res, 'delete_message', { room: trunc(room, 20), id: trunc(id, 80) }))) return;
+        if (!isValidRoom(room, cfg.rooms)) return res.status(404).json({ error: 'Комната не найдена' });
+        try {
+            const m = store.findMessage(room, id);
+            const author = m ? trunc(m.user, 40) : '';
+            const ok = await store.removeMessage(room, id);
+            if (!ok) return res.status(404).json({ ok: false, code: 'MESSAGE_NOT_FOUND' });
+            await admin.audit('delete_message', { room, id: trunc(id, 80), author, ip: ipOf(req) });
+            io.to(room).emit('message-deleted', { room, id });
+            res.json({ ok: true });
+        } catch (e) {
+            logger.error?.(`adminDeleteMessage: ${e.code || e.message}`);
+            res.status(503).json({ ok: false, code: 'STORE_UNAVAILABLE' });
+        }
+    }
+
+    async function adminPurgeUser(req, res) {
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (!(await requireAdmin(req, res, 'purge_user', { target: trunc(b.name, 40) }))) return;
+        if (typeof b.name !== 'string' || !b.name.trim()) return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD', message: 'Нужно имя' });
+        try {
+            const removed = await store.removeByUser(b.name);
+            for (const r of removed.slice(0, 2000)) io.to(r.room).emit('message-deleted', r);
+            await admin.audit('purge_user', { target: trunc(b.name, 40), removed: removed.length, ip: ipOf(req) });
+            res.json({ ok: true, removed: removed.length });
+        } catch (e) {
+            logger.error?.(`adminPurgeUser: ${e.code || e.message}`);
+            res.status(503).json({ ok: false, code: 'STORE_UNAVAILABLE' });
+        }
+    }
+
+    async function adminUsers(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_users', {}))) return;
+        res.json({ ok: true, users: accounts.listUsers(req.query && req.query.q) });
+    }
+
+    async function adminBan(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (!(await requireAdmin(req, res, 'ban', { target: trunc(b.name, 40) }))) return;
+        if (typeof b.name !== 'string' || typeof b.banned !== 'boolean') return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD', message: 'Нужны name и banned (true/false)' });
+        const u = accounts.findByKey(nameKey(b.name));
+        if (!u) return res.status(404).json({ ok: false, code: 'NO_USER' });
+        if (!(await accounts.setBanned(nameKey(b.name), b.banned))) return res.status(503).json({ ok: false, code: 'STORE_UNAVAILABLE' });
+        if (b.banned && io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
+        await admin.audit('ban', { target: trunc(b.name, 40), banned: b.banned, ip: ipOf(req) });
+        res.json({ ok: true });
+    }
+
+    async function adminVerifyReject(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (!(await requireAdmin(req, res, 'verify_reject', { target: trunc(b.name, 40) }))) return;
+        if (typeof b.name !== 'string') return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD' });
+        if (!(await accounts.rejectVerification(nameKey(b.name)))) return res.status(404).json({ ok: false, code: 'NO_REQUEST' });
+        await admin.audit('verify_reject', { target: trunc(b.name, 40), ip: ipOf(req) });
+        res.json({ ok: true });
+    }
+
+    async function adminListings(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_listings', {}))) return;
+        res.json({ ok: true, listings: listings.listAll() });
+    }
+
+    async function adminDeleteListing(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'delete_listing', { id: trunc(req.params.id, 40) }))) return;
+        const r = await listings.removeAny(req.params.id);
+        if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        await admin.audit('delete_listing', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), ip: ipOf(req) });
+        if (io && typeof io.emit === 'function') io.emit('listing-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
+    async function adminAudit(req, res) {
+        if (!(await requireAdmin(req, res, 'view_audit', {}))) return;
+        res.json({ ok: true, entries: await admin.readAudit(parseInt(req.query && req.query.limit, 10) || 100) });
+    }
+
+    // ---------- страница панели ----------
+    const PANEL = require('./adminPage');
+    function panel(kind) {
+        return (req, res) => {
+            if (!admin.isEnabled()) return res.status(404).json({ error: 'Not found' });
+            res.set('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+            res.set('X-Frame-Options', 'DENY');
+            res.set('Content-Type', PANEL[kind].type);
+            res.send(PANEL[kind].body);
+        };
+    }
+
     // ---------- объявления ----------
     const listingFail = (res, r) => res.status(
         r.code === 'LISTING_NOT_FOUND' ? 404 : (r.code === 'NOT_OWNER' || r.code === 'NOT_VERIFIED') ? 403 :
@@ -236,7 +352,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 
-    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
+    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, logger }) {
@@ -258,9 +374,22 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, limit
     app.get('/api/messages/:room', h.history);
     app.delete('/api/messages/:room', h.clearRoom);
     app.get('/api/admin/export', h.exportAll);
+    app.get('/admin', h.panel('html'));
+    app.get('/admin/admin.js', h.panel('js'));
+    app.get('/admin/admin.css', h.panel('css'));
     app.use('/api/admin', express.json({ limit: '2kb' }));
     app.post('/api/admin/verify', h.adminVerify);
+    app.post('/api/admin/verify-reject', h.adminVerifyReject);
     app.get('/api/admin/verify-requests', h.adminVerifyRequests);
+    app.get('/api/admin/overview', h.adminOverview);
+    app.get('/api/admin/messages/:room', h.adminMessages);
+    app.delete('/api/admin/messages/:room/:id', h.adminDeleteMessage);
+    app.post('/api/admin/purge-user', h.adminPurgeUser);
+    app.get('/api/admin/users', h.adminUsers);
+    app.post('/api/admin/ban', h.adminBan);
+    app.get('/api/admin/listings', h.adminListings);
+    app.delete('/api/admin/listings/:id', h.adminDeleteListing);
+    app.get('/api/admin/audit', h.adminAudit);
     app.use('/api/auth', express.json({ limit: '2kb' }));
     app.post('/api/auth/register', h.register);
     app.post('/api/auth/login', h.login);

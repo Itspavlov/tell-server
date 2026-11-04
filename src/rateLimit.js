@@ -26,6 +26,14 @@ class RateLimiter {
         return { ok: true, remaining: this.max - list.length };
     }
 
+    // Проверка без учёта обращения: можно ли ещё пускать этот ключ
+    peek(key) {
+        const t = this.now();
+        const list = (this.hits.get(key) || []).filter(x => x > t - this.windowMs);
+        if (list.length >= this.max) return { ok: false, retryAfterMs: Math.max(1, list[0] + this.windowMs - t) };
+        return { ok: true };
+    }
+
     delete(key) { this.hits.delete(key); }
 
     // Чистка давно неактивных ключей (вызывается по таймеру)
@@ -50,6 +58,7 @@ function createLimiters(rates, now) {
         http: make(rates.httpPerIp),
         history: make(rates.historyPerIp),
         admin: make(rates.adminPerIp),
+        adminFail: make(rates.adminFail),
         reactSocket: make(rates.reactSocket),
         reactIp: make(rates.reactIp),
         registerIp: make(rates.registerIp),

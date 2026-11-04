@@ -40,7 +40,19 @@ function createAdmin({ token, dataDir, logger = console, fsImpl = fsp, now = Dat
         }
     }
 
-    return { isEnabled, authorize, audit, auditFile };
+    // Последние записи журнала (новые сверху)
+    async function readAudit(limit = 100) {
+        let text = '';
+        try { text = await fsImpl.readFile(auditFile, 'utf-8'); } catch (e) { return []; }
+        const out = [];
+        for (const line of text.split('\n').slice(-Math.min(limit, 500)).reverse()) {
+            if (!line) continue;
+            try { out.push(JSON.parse(line)); } catch (e) { /* битая строка пропускается */ }
+        }
+        return out;
+    }
+
+    return { isEnabled, authorize, audit, auditFile, readAudit };
 }
 
 module.exports = { createAdmin };
