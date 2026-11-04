@@ -84,7 +84,12 @@ function loadConfig(env = process.env) {
             connectPerIp: { windowMs: 60_000, max: 60 },
             httpPerIp: { windowMs: 60_000, max: 120 },
             historyPerIp: { windowMs: 60_000, max: 60 },
-            adminPerIp: { windowMs: 60_000, max: 10 }
+            adminPerIp: { windowMs: 60_000, max: 10 },
+            reactSocket: { windowMs: 10_000, max: 20 },
+            reactIp: { windowMs: 60_000, max: 120 },
+            registerIp: { windowMs: 3_600_000, max: 10 },
+            loginIp: { windowMs: 60_000, max: 10 },
+            loginName: { windowMs: 900_000, max: 10 }
         })
     });
 }

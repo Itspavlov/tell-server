@@ -28,8 +28,19 @@ const MESSAGES = {
     DUPLICATE_TEXT: 'Такое сообщение вы уже отправили',
     STORE_UNAVAILABLE: 'Не удалось сохранить сообщение. Попробуйте ещё раз',
     STORE_FULL: 'Хранилище фото заполнено. Отправьте текст без фото',
-    SERVER_ERROR: 'Ошибка сервера. Попробуйте позже'
+    SERVER_ERROR: 'Ошибка сервера. Попробуйте позже',
+    BAD_PASSWORD: 'Пароль: от 8 до 72 символов',
+    NAME_TAKEN: 'Это имя уже занято. Войдите в аккаунт или выберите другое имя',
+    BAD_CREDENTIALS: 'Неверное имя или пароль',
+    AUTH_REQUIRED: 'Нужно войти в аккаунт',
+    SELF_DM: 'Это ваше собственное объявление',
+    NO_CONVERSATION: 'Диалог не найден',
+    BAD_REACTION: 'Такой реакции нет',
+    MESSAGE_NOT_FOUND: 'Сообщение не найдено',
+    TOO_MANY_ACCOUNTS: 'Регистрация временно недоступна'
 };
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+const MSG_ID_RE = /^msg_[A-Za-z0-9_-]{1,60}$/;
 
 function fail(code, extra) {
     return { ok: false, code, message: MESSAGES[code] || MESSAGES.SERVER_ERROR, ...(extra || {}) };
@@ -122,7 +133,15 @@ function validateSend(data, limits, rooms) {
         clientId = data.clientId;
     }
 
-    return { ok: true, value: { room: data.room, user: name.value, text, image, imageBytes, clientId } };
+    let replyTo = null;
+    if (typeof data.replyTo === 'string' && MSG_ID_RE.test(data.replyTo)) replyTo = data.replyTo;
+
+    return { ok: true, value: { room: data.room, user: name.value, text, image, imageBytes, clientId, replyTo } };
+}
+
+function validatePassword(pw) {
+    if (typeof pw !== 'string' || pw.length < 8 || pw.length > 72 || !pw.trim()) return fail('BAD_PASSWORD');
+    return { ok: true, value: pw };
 }
 
 // Аватар — только первая буква имени; присланному клиентом аватару не верим
@@ -133,5 +152,6 @@ function avatarFor(user) {
 
 module.exports = {
     MESSAGES, fail, isValidRoom, normalizeName, normalizeText,
-    validateImage, validateSend, avatarFor, detectMime, IMAGE_RE
+    validateImage, validateSend, validatePassword, avatarFor, detectMime, IMAGE_RE,
+    REACTIONS, CLIENT_ID_RE, MSG_ID_RE
 };

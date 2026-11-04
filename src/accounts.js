@@ -1,0 +1,130 @@
+'use strict';
+// ============================================
+// Аккаунты и сессии.
+//  - пароль хранится только в виде scrypt-хеша с индивидуальной солью;
+//  - токен сессии (32 случайных байта) выдаётся клиенту один раз,
+//    на сервере хранится только его SHA-256;
+//  - сессия живёт 30 дней, не более 10 сессий на пользователя.
+// Хранилище — файл accounts.json. На Render без Persistent Disk он
+// пропадает при пересоздании сервиса (см. README).
+// ============================================
+const crypto = require('crypto');
+const { promisify } = require('util');
+const path = require('path');
+const { JsonFile } = require('./jsonfile');
+const { normalizeName, validatePassword, fail } = require('./validate');
+
+const scrypt = promisify(crypto.scrypt);
+const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
+const MAX_SESSIONS = 10;
+const MAX_USERS = 20000;
+
+// Ключ имени: «Тарас», «тарас» и «Т.арас» — один и тот же человек
+function nameKey(name) {
+    return String(name).normalize('NFC').toLowerCase().replace(/[\s_.'\-]+/g, '');
+}
+const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+
+class AccountStore {
+    constructor({ dataDir, limits, now = Date.now, logger = console, fsImpl }) {
+        this.file = new JsonFile({ file: path.join(dataDir, 'accounts.json'), fsImpl });
+        this.limits = limits;
+        this.now = now;
+        this.logger = logger;
+        this.data = { users: {}, sessions: {} };
+        this.byKey = new Map();
+        this.dummy = null;
+    }
+
+    async init() {
+        const d = await this.file.load({ users: {}, sessions: {} });
+        this.data = { users: d.users || {}, sessions: d.sessions || {} };
+        for (const u of Object.values(this.data.users)) this.byKey.set(u.key, u);
+        this.dummy = { salt: crypto.randomBytes(16).toString('hex') };
+        this.logger.info?.(`Аккаунты: ${this.byKey.size}`);
+    }
+
+    _public(u) { return { id: u.id, name: u.name, key: u.key }; }
+    findByKey(key) { const u = this.byKey.get(key); return u ? this._public(u) : null; }
+    byId(id) { const u = this.data.users[id]; return u ? this._public(u) : null; }
+    isNameTaken(key) { return this.byKey.has(key); }
+    count() { return this.byKey.size; }
+
+    async _hash(password, salt) {
+        return (await scrypt(password, Buffer.from(salt, 'hex'), 64)).toString('hex');
+    }
+
+    async _newSession(userId) {
+        const token = crypto.randomBytes(32).toString('hex');
+        const t = this.now();
+        // чистим просроченные и лишние сессии этого пользователя
+        const mine = [];
+        for (const [h, s] of Object.entries(this.data.sessions)) {
+            if (s.exp <= t) delete this.data.sessions[h];
+            else if (s.userId === userId) mine.push([h, s]);
+        }
+        mine.sort((a, b) => a[1].exp - b[1].exp);
+        while (mine.length >= MAX_SESSIONS) delete this.data.sessions[mine.shift()[0]];
+        this.data.sessions[sha(token)] = { userId, exp: t + SESSION_TTL_MS };
+        return token;
+    }
+
+    async register(rawName, password) {
+        const n = normalizeName(rawName, this.limits);
+        if (!n.ok) return n;
+        const p = validatePassword(password);
+        if (!p.ok) return p;
+        if (this.byKey.size >= MAX_USERS) return fail('TOO_MANY_ACCOUNTS');
+        const key = nameKey(n.value);
+        if (this.byKey.has(key)) return fail('NAME_TAKEN');
+
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = await this._hash(password, salt);
+        // повторная проверка после await: две одновременные регистрации не пройдут обе
+        if (this.byKey.has(key)) return fail('NAME_TAKEN');
+
+        const user = { id: 'u_' + crypto.randomBytes(8).toString('hex'), name: n.value, key, salt, hash, createdAt: this.now() };
+        this.data.users[user.id] = user;
+        this.byKey.set(key, user);
+        const token = await this._newSession(user.id);
+        try { await this.file.save(this.data); }
+        catch (e) {
+            delete this.data.users[user.id]; this.byKey.delete(key); delete this.data.sessions[sha(token)];
+            this.logger.error?.(`Аккаунт не сохранён: ${e.code || e.message}`);
+            return fail('SERVER_ERROR');
+        }
+        return { ok: true, token, user: { id: user.id, name: user.name } };
+    }
+
+    async login(rawName, password) {
+        const n = normalizeName(rawName, this.limits);
+        if (!n.ok || typeof password !== 'string' || password.length > 72) return fail('BAD_CREDENTIALS');
+        const user = this.byKey.get(nameKey(n.value));
+        // для несуществующего имени тоже считаем хеш — время ответа не выдаёт, есть ли такой аккаунт
+        const hash = await this._hash(password, user ? user.salt : this.dummy.salt);
+        if (!user) return fail('BAD_CREDENTIALS');
+        const a = Buffer.from(hash, 'hex'), b = Buffer.from(user.hash, 'hex');
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return fail('BAD_CREDENTIALS');
+        const token = await this._newSession(user.id);
+        try { await this.file.save(this.data); } catch (e) { return fail('SERVER_ERROR'); }
+        return { ok: true, token, user: { id: user.id, name: user.name } };
+    }
+
+    authenticate(token) {
+        if (typeof token !== 'string' || token.length !== 64 || !/^[0-9a-f]+$/.test(token)) return null;
+        const s = this.data.sessions[sha(token)];
+        if (!s || s.exp <= this.now()) return null;
+        return this.byId(s.userId);
+    }
+
+    async logout(token) {
+        if (typeof token !== 'string') return;
+        const h = sha(token);
+        if (this.data.sessions[h]) {
+            delete this.data.sessions[h];
+            await this.file.save(this.data).catch(() => {});
+        }
+    }
+}
+
+module.exports = { AccountStore, nameKey };

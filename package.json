@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/unit.test.js tests/store.test.js tests/sockets.test.js tests/http.test.js",
+    "test": "node --test tests/unit.test.js tests/store.test.js tests/sockets.test.js tests/http.test.js tests/accounts.test.js",
     "test:integration": "node --test tests/integration.test.js",
     "backup": "node scripts/backup.js"
   },

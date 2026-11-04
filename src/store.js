@@ -19,7 +19,7 @@
 
 const fsp = require('fs').promises;
 const path = require('path');
-const { IMAGE_RE, avatarFor } = require('./validate');
+const { IMAGE_RE, avatarFor, REACTIONS } = require('./validate');
 
 const RECENT_TTL_MS = 10 * 60 * 1000;
 const RECENT_MAX = 5000;
@@ -124,9 +124,23 @@ class MessageStore {
     }
 
     // Безопасное представление сообщения для клиента
-    _publicView(m) {
+    _publicView(m, viewer = null) {
         const user = typeof m.user === 'string' ? m.user.slice(0, 40) : 'Гость';
+        const reactions = {};
+        const mine = [];
+        if (m.reactions && typeof m.reactions === 'object') {
+            for (const e of REACTIONS) {
+                const arr = m.reactions[e];
+                if (Array.isArray(arr) && arr.length) {
+                    reactions[e] = arr.length;
+                    if (viewer && arr.includes(viewer)) mine.push(e);
+                }
+            }
+        }
+        const r = m.reply && typeof m.reply === 'object' ? m.reply : null;
         return {
+            reply: r ? { id: String(r.id || '').slice(0, 80), user: String(r.user || '').slice(0, 40), text: String(r.text || '').slice(0, 100) } : null,
+            reactions, mine,
             id: typeof m.id === 'string' ? m.id : '',
             user,
             text: typeof m.text === 'string' ? m.text : '',
@@ -139,7 +153,7 @@ class MessageStore {
     isReady() { return this.ready && !this.closed; }
 
     // Безопасное представление для рассылки
-    publicView(m) { return this._publicView(m); }
+    publicView(m, viewer = null) { return this._publicView(m, viewer); }
 
     // Уже ли сообщение с таким clientKey было принято (повторная отправка)
     isKnown(key) {
@@ -151,7 +165,7 @@ class MessageStore {
 
     // ---------- чтение ----------
     // before — id сообщения: вернуть более старые, чем оно
-    getHistory(room, { limit = 100, before = null } = {}) {
+    getHistory(room, { limit = 100, before = null, viewer = null } = {}) {
         const list = this.rooms.includes(room) ? this.data[room] : null;
         if (!Array.isArray(list)) return { messages: [], hasMore: false, nextBefore: null };
 
@@ -161,7 +175,7 @@ class MessageStore {
             end = idx >= 0 ? idx : 0;
         }
         const start = Math.max(0, end - limit);
-        const messages = list.slice(start, end).filter(Boolean).map(m => this._publicView(m));
+        const messages = list.slice(start, end).filter(Boolean).map(m => this._publicView(m, viewer));
         return { messages, hasMore: start > 0, nextBefore: messages.length ? messages[0].id : null };
     }
 
@@ -217,6 +231,30 @@ class MessageStore {
         };
         await this._commit(undo);
         return { message, duplicate: false };
+    }
+
+    findMessage(room, id) {
+        const list = this.rooms.includes(room) ? this.data[room] : null;
+        return Array.isArray(list) ? list.find(m => m && m.id === id) || null : null;
+    }
+
+    // Поставить/снять реакцию. Возвращает { counts, mine }.
+    async react(room, id, emoji, voter) {
+        if (!this.isReady()) throw new StoreError('STORE_UNAVAILABLE');
+        if (!REACTIONS.includes(emoji)) throw new StoreError('BAD_REACTION');
+        const m = this.findMessage(room, id);
+        if (!m) throw new StoreError('MESSAGE_NOT_FOUND');
+        const prev = JSON.stringify(m.reactions || {});
+        if (!m.reactions || typeof m.reactions !== 'object') m.reactions = {};
+        const arr = Array.isArray(m.reactions[emoji]) ? m.reactions[emoji] : (m.reactions[emoji] = []);
+        const i = arr.indexOf(voter);
+        if (i >= 0) arr.splice(i, 1);
+        else if (arr.length < 200) arr.push(voter);
+        if (!arr.length) delete m.reactions[emoji];
+        const undo = () => { m.reactions = JSON.parse(prev); };
+        await this._commit(undo);
+        const v = this._publicView(m, voter);
+        return { counts: v.reactions, mine: v.mine };
     }
 
     // Очистка комнаты (только для администратора)

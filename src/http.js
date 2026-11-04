@@ -6,8 +6,10 @@
 
 const { isValidRoom } = require('./validate');
 const { isOriginAllowed } = require('./config');
+const { fail } = require('./validate');
+const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, limiters, io, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, limiters, io, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -100,27 +102,75 @@ function createHandlers({ cfg, store, admin, limiters, io, logger = console }) {
         res.json(store.exportAll());
     }
 
+    // ---------- аккаунты ----------
+    const bearer = (req) => {
+        const m = /^Bearer ([0-9a-f]{64})$/.exec((req.headers && req.headers.authorization) || '');
+        return m ? m[1] : null;
+    };
+    const authFail = (res, r) => res.status(r.code === 'SERVER_ERROR' || r.code === 'TOO_MANY_ACCOUNTS' ? 503 : (r.code === 'BAD_CREDENTIALS' ? 401 : (r.code === 'NAME_TAKEN' ? 409 : 400)))
+        .json({ ok: false, code: r.code, message: r.message });
+
+    async function register(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.registerIp.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await accounts.register(b.name, b.password);
+        if (!r.ok) return authFail(res, r);
+        res.status(201).json({ ok: true, token: r.token, user: r.user });
+    }
+
+    async function login(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.loginIp.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (typeof b.name === 'string') {
+            const rn = limiters.loginName.hit(nameKey(b.name).slice(0, 40));
+            if (!rn.ok) return limited(res, rn);
+        }
+        const r = await accounts.login(b.name, b.password);
+        if (!r.ok) return authFail(res, r);
+        res.json({ ok: true, token: r.token, user: r.user });
+    }
+
+    async function logout(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        await accounts.logout(bearer(req));
+        res.json({ ok: true });
+    }
+
+    function me(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        res.json({ ok: true, user: { id: u.id, name: u.name } });
+    }
+
     function notFound(req, res) { res.status(404).json({ error: 'Not found' }); }
 
     function onError(err, req, res, next) { // eslint-disable-line no-unused-vars
-        logger.error?.(`HTTP ошибка: ${err && err.message}`);
         if (res.headersSent) return;
+        if (err && (err.type === 'entity.parse.failed' || err.type === 'entity.too.large')) {
+            return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD', message: 'Некорректный запрос' });
+        }
+        logger.error?.(`HTTP ошибка: ${err && err.message}`);
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 
-    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, notFound, onError };
+    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, limiters, io, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, limiters, io, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, limiters, io, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, limiters, io, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
-        methods: ['GET', 'DELETE'],
-        allowedHeaders: ['Authorization']
+        methods: ['GET', 'POST', 'DELETE'],
+        allowedHeaders: ['Authorization', 'Content-Type']
     }));
     app.use(h.security);
     app.get('/healthz', h.healthz);   // без лимита: им пользуется мониторинг Render
@@ -130,6 +180,11 @@ function createApp({ express, cors, cfg, store, admin, limiters, io, logger }) {
     app.get('/api/messages/:room', h.history);
     app.delete('/api/messages/:room', h.clearRoom);
     app.get('/api/admin/export', h.exportAll);
+    app.use('/api/auth', express.json({ limit: '2kb' }));
+    app.post('/api/auth/register', h.register);
+    app.post('/api/auth/login', h.login);
+    app.post('/api/auth/logout', h.logout);
+    app.get('/api/auth/me', h.me);
     app.use(h.notFound);
     app.use(h.onError);
     return app;

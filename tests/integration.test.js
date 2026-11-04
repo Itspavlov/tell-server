@@ -83,3 +83,46 @@ test('фото принимается; поддельное фото откло�
     assert.equal(bad.ok, false);
     a.close();
 });
+
+// ---- аккаунты, личные сообщения, реакции (тоже не запускалось автором) ----
+const post = (p, body) => fetch(URL + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(async r => ({ status: r.status, body: await r.json() }));
+const authed = (token) => new Promise((res, rej) => {
+    const s = connect(URL, { transports: ['websocket'], forceNew: true, auth: { token } });
+    s.on('connect', () => res(s)); s.on('connect_error', rej);
+});
+
+test('регистрация и вход по HTTP', async () => {
+    const r = await post('/api/auth/register', { name: 'ИнтТест', password: 'password123' });
+    assert.equal(r.status, 201);
+    assert.equal((await post('/api/auth/register', { name: 'инттест', password: 'password123' })).status, 409);
+    assert.equal((await post('/api/auth/login', { name: 'ИнтТест', password: 'wrongwrong' })).status, 401);
+    assert.equal((await post('/api/auth/login', { name: 'ИнтТест', password: 'password123' })).status, 200);
+});
+
+test('личные сообщения между двумя аккаунтами, посторонний не видит', async () => {
+    const a = (await post('/api/auth/register', { name: 'ГостьИнт', password: 'password123' })).body;
+    const o = (await post('/api/auth/register', { name: 'ХозяинИнт', password: 'password123' })).body;
+    const x = (await post('/api/auth/register', { name: 'ПосторонийИнт', password: 'password123' })).body;
+    const sa = await authed(a.token), so = await authed(o.token), sx = await authed(x.token);
+    const opened = await emitAck(sa, 'dm-open', { ownerName: 'ХозяинИнт', adId: 'h-1', adTitle: 'Квартира' });
+    assert.equal(opened.ok, true);
+    const got = new Promise(r => so.once('dm-message', r));
+    assert.equal((await emitAck(sa, 'dm-send', { convId: opened.conv.id, text: 'Здравствуйте', clientId: 'dm-int-0001' })).ok, true);
+    assert.equal((await got).text, 'Здравствуйте');
+    assert.equal((await emitAck(sx, 'dm-history', { convId: opened.conv.id })).ok, false);
+    [sa, so, sx].forEach(s => s.close());
+});
+
+test('реакция и ответ в общем чате', async () => {
+    const a = await client();
+    await emitAck(a, 'join-room', 'trips');
+    const first = await emitAck(a, 'send-message', { room: 'trips', user: 'РеактИнт', text: 'едем?', clientId: 'int-test-0010' });
+    const upd = new Promise(r => a.once('reaction-update', r));
+    const r = await emitAck(a, 'react', { room: 'trips', id: first.id, emoji: '🔥', user: 'РеактИнт' });
+    assert.deepEqual(r.reactions, { '🔥': 1 });
+    assert.deepEqual((await upd).reactions, { '🔥': 1 });
+    const gotMsg = new Promise(res => a.once('new-message', res));
+    await emitAck(a, 'send-message', { room: 'trips', user: 'РеактИнт', text: 'я за', replyTo: first.id, clientId: 'int-test-0011' });
+    assert.equal((await gotMsg).reply.id, first.id);
+    a.close();
+});

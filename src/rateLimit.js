@@ -49,7 +49,12 @@ function createLimiters(rates, now) {
         connect: make(rates.connectPerIp),
         http: make(rates.httpPerIp),
         history: make(rates.historyPerIp),
-        admin: make(rates.adminPerIp)
+        admin: make(rates.adminPerIp),
+        reactSocket: make(rates.reactSocket),
+        reactIp: make(rates.reactIp),
+        registerIp: make(rates.registerIp),
+        loginIp: make(rates.loginIp),
+        loginName: make(rates.loginName)
     };
 }
 

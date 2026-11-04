@@ -12,6 +12,8 @@ const { createAdmin } = require('./src/admin');
 const { createLimiters } = require('./src/rateLimit');
 const { createApp } = require('./src/http');
 const { createSocketLayer } = require('./src/sockets');
+const { AccountStore } = require('./src/accounts');
+const { DmStore } = require('./src/dm');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -25,6 +27,11 @@ async function start(env = process.env, logger = console) {
     });
     await store.init(); // при повреждённом файле бросит ошибку и сервер не стартует
 
+    const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger });
+    await accounts.init();
+    const dms = new DmStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    await dms.init();
+
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
 
@@ -35,10 +42,10 @@ async function start(env = process.env, logger = console) {
         maxHttpBufferSize: cfg.limits.socketBufferBytes,
         allowRequest: (req, cb) => layer.allowRequest(req, cb)
     });
-    layer = createSocketLayer({ io, cfg, store, limiters, logger });
+    layer = createSocketLayer({ io, cfg, store, accounts, dms, limiters, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, limiters, io, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, limiters, io, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

@@ -22,7 +22,7 @@ const join = (s, room = 'housing') => new Promise((res) => s.fire('join-room', r
 
 test('новый клиент получает server-hello protocol 2', async () => {
     const { connect } = await setup();
-    assert.deepEqual(connect().sent('server-hello')[0], { protocol: 2 });
+    assert.deepEqual(connect().sent('server-hello')[0], { protocol: 2, user: null });
 });
 
 test('join-room отдаёт историю массивом (как раньше), неверная комната отклоняется', async () => {
