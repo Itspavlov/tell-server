@@ -19,17 +19,20 @@ const { isOriginAllowed } = require('./config');
 const { fail, validateSend, avatarFor, isValidRoom, normalizeName, REACTIONS } = require('./validate');
 const { StoreError } = require('./store');
 const { nameKey } = require('./accounts');
+const { cleanAd } = require('./groups');
 
 const KNOWN_EVENTS = new Set([
     'join-room', 'leave-room', 'send-message', 'react',
-    'dm-open', 'dm-list', 'dm-history', 'dm-send'
+    'dm-open', 'dm-list', 'dm-history', 'dm-send',
+    'group-create', 'group-list', 'group-open', 'group-send', 'group-react',
+    'group-invite', 'group-join', 'group-leave', 'ad-reactions', 'ad-react'
 ]);
 
 function newMessageId() {
     return 'msg_' + Date.now() + '_' + crypto.randomBytes(6).toString('hex');
 }
 
-function createSocketLayer({ io, cfg, store, accounts, dms, limiters, logger = console, now = Date.now, newId = newMessageId }) {
+function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, logger = console, now = Date.now, newId = newMessageId }) {
     const conns = new Map(); // ip -> число соединений
 
     function allowRequest(req, cb) {
@@ -153,6 +156,10 @@ function createSocketLayer({ io, cfg, store, accounts, dms, limiters, logger = c
                         };
                     }
                 }
+                if (!message.reply && data && data.replyAd) {
+                    const ad = cleanAd(data.replyAd);
+                    if (ad) message.reply = { id: 'ad_' + ad.id, user: 'Объявление', text: ad.title.slice(0, 100) };
+                }
                 const res = await store.append(room, message, key);
 
                 if (!res.duplicate) {
@@ -248,6 +255,119 @@ function createSocketLayer({ io, cfg, store, accounts, dms, limiters, logger = c
                 reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: !!res.duplicate });
             } catch (e) { logger.error?.(`dm-send: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
         });
+
+        // ---------------- группы друзей ----------------
+        const needGroups = (ack) => {
+            if (account && groups) return true;
+            reply(ack, fail('AUTH_REQUIRED'));
+            return false;
+        };
+        const tellMembers = (ids, event, payload) => {
+            for (const id of new Set(ids)) io.to('user:' + id).emit(event, payload);
+        };
+        const safe = (name, fn) => async (...args) => {
+            const ack = args[args.length - 1];
+            try { await fn(...args); }
+            catch (e) { logger.error?.(`${name}: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
+        };
+
+        socket.on('group-create', safe('group-create', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            if (!limiters.groupCreate.hit(account.id).ok) return reply(ack, fail('RATE_LIMITED'));
+            reply(ack, await groups.create(account, d && d.name));
+        }));
+
+        socket.on('group-list', (ack) => {
+            if (typeof ack !== 'function') return;
+            if (!needGroups(ack)) return;
+            ack({ ok: true, groups: groups.list(account) });
+        });
+
+        socket.on('group-open', (d, ack) => {
+            if (typeof ack !== 'function') return;
+            if (!needGroups(ack)) return;
+            if (!limiters.joinSocket.hit(socket.id).ok) return ack(fail('RATE_LIMITED'));
+            if (!d || typeof d !== 'object') return ack(fail('BAD_PAYLOAD'));
+            const before = typeof d.before === 'string' && d.before.length < 80 ? d.before : null;
+            ack(groups.open(account, d.groupId, { before, limit: cfg.limits.historyDefault }));
+        });
+
+        socket.on('group-send', safe('group-send', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            if (!rateOk(ack)) return;
+            if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const res = await groups.send(account, d.groupId, { text: d.text, replyTo: d.replyTo, ad: d.ad, clientId: d.clientId === undefined ? null : d.clientId });
+            if (!res.ok) return reply(ack, res);
+            if (!res.duplicate) tellMembers(res.members, 'group-message', res.message);
+            reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: !!res.duplicate });
+        }));
+
+        socket.on('group-react', safe('group-react', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            if (!limiters.reactSocket.hit(socket.id).ok || !limiters.reactIp.hit(ip).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const res = await groups.react(account, d.groupId, d.id, d.emoji);
+            if (!res.ok) return reply(ack, res);
+            tellMembers(res.members, 'group-reaction', { groupId: d.groupId, id: d.id, reactions: res.reactions });
+            reply(ack, { ok: true, reactions: res.reactions, mine: res.mine });
+        }));
+
+        socket.on('group-invite', safe('group-invite', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            if (!limiters.groupInvite.hit(account.id).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const res = await groups.invite(account, d.groupId, d.name);
+            if (!res.ok) return reply(ack, res);
+            tellMembers(res.members, 'group-members', { groupId: d.groupId, added: res.added });
+            io.to('user:' + res.added.id).emit('group-invited', { id: res.group.id, name: res.group.name, by: account.name });
+            reply(ack, { ok: true, added: res.added });
+        }));
+
+        socket.on('group-join', safe('group-join', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            if (!limiters.groupJoin.hit(ip).ok) return reply(ack, fail('RATE_LIMITED'));
+            const res = await groups.join(account, d && d.code);
+            if (!res.ok) return reply(ack, res);
+            if (res.members) tellMembers(res.members, 'group-members', { groupId: res.group.id, added: { id: account.id, name: account.name } });
+            reply(ack, { ok: true, group: res.group, already: !!res.already });
+        }));
+
+        socket.on('group-leave', safe('group-leave', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            const res = await groups.leave(account, d && d.groupId);
+            if (!res.ok) return reply(ack, res);
+            tellMembers(res.remaining, 'group-members', { groupId: d.groupId, left: { id: account.id, name: account.name } });
+            reply(ack, { ok: true });
+        }));
+
+        // ---------------- реакции на объявления ----------------
+        const adViewer = (userName) => {
+            if (account) return { voter: 'u' + account.id };
+            const n = normalizeName(userName, cfg.limits);
+            if (!n.ok) return { error: n };
+            if (accounts && accounts.isNameTaken(nameKey(n.value))) return { error: fail('NAME_TAKEN') };
+            return { voter: 'g' + nameKey(n.value) };
+        };
+
+        socket.on('ad-reactions', (d, ack) => {
+            if (typeof ack !== 'function' || !adReacts) return;
+            if (!limiters.joinSocket.hit(socket.id).ok) return ack(fail('RATE_LIMITED'));
+            const ids = d && Array.isArray(d.ids) ? d.ids : [];
+            const v = account ? { voter: 'u' + account.id } : (d && d.user ? adViewer(d.user) : { voter: null });
+            ack({ ok: true, ads: adReacts.many(ids, v.voter || null) });
+        });
+
+        socket.on('ad-react', safe('ad-react', async (d, ack) => {
+            if (!adReacts) return reply(ack, fail('SERVER_ERROR'));
+            if (!limiters.reactSocket.hit(socket.id).ok || !limiters.reactIp.hit(ip).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const v = adViewer(d.user);
+            if (v.error) return reply(ack, v.error);
+            const res = await adReacts.toggle(d.adId, d.emoji, v.voter);
+            if (!res.ok) return reply(ack, res);
+            io.to('housing').emit('ad-reaction-update', { adId: d.adId, reactions: res.counts });
+            reply(ack, { ok: true, reactions: res.counts, mine: res.mine });
+        }));
 
         socket.on('disconnect', () => {
             const n = (conns.get(ip) || 1) - 1;

@@ -54,7 +54,10 @@ function createLimiters(rates, now) {
         reactIp: make(rates.reactIp),
         registerIp: make(rates.registerIp),
         loginIp: make(rates.loginIp),
-        loginName: make(rates.loginName)
+        loginName: make(rates.loginName),
+        groupCreate: make(rates.groupCreate),
+        groupJoin: make(rates.groupJoin),
+        groupInvite: make(rates.groupInvite)
     };
 }
 

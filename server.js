@@ -14,6 +14,7 @@ const { createApp } = require('./src/http');
 const { createSocketLayer } = require('./src/sockets');
 const { AccountStore } = require('./src/accounts');
 const { DmStore } = require('./src/dm');
+const { GroupStore, AdReactions } = require('./src/groups');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -31,6 +32,10 @@ async function start(env = process.env, logger = console) {
     await accounts.init();
     const dms = new DmStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await dms.init();
+    const groups = new GroupStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    await groups.init();
+    const adReacts = new AdReactions({ dataDir: cfg.dataDir, logger });
+    await adReacts.init();
 
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
@@ -42,7 +47,7 @@ async function start(env = process.env, logger = console) {
         maxHttpBufferSize: cfg.limits.socketBufferBytes,
         allowRequest: (req, cb) => layer.allowRequest(req, cb)
     });
-    layer = createSocketLayer({ io, cfg, store, accounts, dms, limiters, logger });
+    layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, logger });
     io.on('connection', layer.onConnection);
 
     const app = createApp({ express, cors, cfg, store, admin, accounts, limiters, io, logger });

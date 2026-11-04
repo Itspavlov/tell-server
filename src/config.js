@@ -89,7 +89,10 @@ function loadConfig(env = process.env) {
             reactIp: { windowMs: 60_000, max: 120 },
             registerIp: { windowMs: 3_600_000, max: 10 },
             loginIp: { windowMs: 60_000, max: 10 },
-            loginName: { windowMs: 900_000, max: 10 }
+            loginName: { windowMs: 900_000, max: 10 },
+            groupCreate: { windowMs: 3_600_000, max: 10 },
+            groupJoin: { windowMs: 60_000, max: 10 },
+            groupInvite: { windowMs: 60_000, max: 20 }
         })
     });
 }

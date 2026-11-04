@@ -37,7 +37,14 @@ const MESSAGES = {
     NO_CONVERSATION: 'Диалог не найден',
     BAD_REACTION: 'Такой реакции нет',
     MESSAGE_NOT_FOUND: 'Сообщение не найдено',
-    TOO_MANY_ACCOUNTS: 'Регистрация временно недоступна'
+    TOO_MANY_ACCOUNTS: 'Регистрация временно недоступна',
+    NO_GROUP: 'Группа не найдена',
+    BAD_GROUP_NAME: 'Название группы: от 2 до 40 символов',
+    USER_NOT_FOUND: 'Пользователь с таким именем не зарегистрирован',
+    GROUP_FULL: 'В группе уже максимум участников (20)',
+    TOO_MANY_GROUPS: 'Слишком много групп (максимум 10)',
+    ALREADY_MEMBER: 'Уже в группе',
+    BAD_INVITE: 'Приглашение недействительно'
 };
 const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 const MSG_ID_RE = /^msg_[A-Za-z0-9_-]{1,60}$/;
