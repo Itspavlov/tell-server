@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -151,6 +151,31 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified } });
     }
 
+    // ---------- push-уведомления ----------
+    function pushKey(req, res) {
+        res.json({ ok: true, enabled: !!(push && push.enabled()), key: push && push.enabled() ? push.publicKey() : '' });
+    }
+
+    async function pushSubscribe(req, res) {
+        if (!accounts || !pushStore || !push || !push.enabled()) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.pushSub.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await pushStore.add(u.id, req.body && req.body.subscription);
+        if (!r.ok) return res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code });
+        res.json({ ok: true });
+    }
+
+    async function pushUnsubscribe(req, res) {
+        if (!accounts || !pushStore) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const ep = req.body && typeof req.body.endpoint === 'string' ? req.body.endpoint : '';
+        await pushStore.removeEndpoint(ep, u.id);
+        res.json({ ok: true });
+    }
+
     // ---------- проверка хозяев ----------
     async function verifyRequest(req, res) {
         if (!accounts) return res.status(404).json({ error: 'Not found' });
@@ -174,6 +199,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         const ok = await accounts.setVerified(nameKey(b.name), b.verified);
         if (!ok) return res.status(404).json({ ok: false, code: 'NO_USER' });
         await admin.audit('verify', { target: b.name.slice(0, 40), verified: b.verified, ip: ipOf(req) });
+        const who = accounts.findByKey(nameKey(b.name));
+        if (notifier && who && b.verified) notifier.notify([who.id], { kind: 'verify', title: 'Вы проверенный хозяин', body: 'Теперь вы можете размещать жильё: Профиль → «Добавить жильё»', open: 'profile', tag: 'verify' });
         res.json({ ok: true });
     }
 
@@ -273,6 +300,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         if (!(await requireAdmin(req, res, 'delete_listing', { id: trunc(req.params.id, 40) }))) return;
         const r = await listings.removeAny(req.params.id);
         if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'listing', title: 'Объявление удалено', body: 'Модератор удалил ваше объявление «' + trunc(r.title, 60) + '»', open: 'profile', tag: 'listing-removed' });
         await admin.audit('delete_listing', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), ip: ipOf(req) });
         if (io && typeof io.emit === 'function') io.emit('listing-changed', { id: req.params.id, removed: true });
         res.json({ ok: true });
@@ -352,15 +380,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, l
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 
-    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
+    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, limiters, io, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -396,6 +424,10 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, limit
     app.post('/api/auth/logout', h.logout);
     app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
+    app.get('/api/push/key', h.pushKey);
+    app.use('/api/push', express.json({ limit: '4kb' }));
+    app.post('/api/push/subscribe', h.pushSubscribe);
+    app.post('/api/push/unsubscribe', h.pushUnsubscribe);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/:id', h.listingGet);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);

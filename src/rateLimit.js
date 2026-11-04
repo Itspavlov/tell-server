@@ -68,7 +68,8 @@ function createLimiters(rates, now) {
         groupJoin: make(rates.groupJoin),
         groupInvite: make(rates.groupInvite),
         listingSave: make(rates.listingSave),
-        verifyRequest: make(rates.verifyRequest)
+        verifyRequest: make(rates.verifyRequest),
+        pushSub: make(rates.pushSub)
     };
 }
 

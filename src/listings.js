@@ -192,7 +192,7 @@ class ListingStore {
         try { await this.file.save(this.data); }
         catch (e) { this.data.listings[id] = l; return fail('STORE_UNAVAILABLE'); }
         this.bytes = JSON.stringify(this.data).length;
-        return { ok: true, ownerName: l.ownerName };
+        return { ok: true, ownerName: l.ownerName, ownerId: l.ownerId, title: l.ad && l.ad.title };
     }
 
     async remove(user, id) {

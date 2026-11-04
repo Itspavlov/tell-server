@@ -32,7 +32,8 @@ function newMessageId() {
     return 'msg_' + Date.now() + '_' + crypto.randomBytes(6).toString('hex');
 }
 
-function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, logger = console, now = Date.now, newId = newMessageId }) {
+function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier = null, logger = console, now = Date.now, newId = newMessageId }) {
+    const ping = (ids, payload) => { if (notifier) notifier.notify(ids, payload); };
     const conns = new Map(); // ip -> число соединений
 
     function allowRequest(req, cb) {
@@ -56,7 +57,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         // Аккаунт определяется по токену, а не по тому, что пишет клиент
         const token = socket.handshake && socket.handshake.auth && socket.handshake.auth.token;
         const account = accounts && token ? accounts.authenticate(token) : null;
-        if (account) socket.join('user:' + account.id);
+        if (account) { socket.join('user:' + account.id); if (notifier) notifier.connected(account.id); }
 
         const state = { joined: new Set(), violations: 0, lastText: '', lastTextAt: 0 };
 
@@ -166,6 +167,13 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
                     state.lastText = text.toLowerCase();
                     state.lastTextAt = now();
                     io.to(room).emit('new-message', { ...store.publicView(res.message), room });
+                    // ответили на сообщение зарегистрированного человека — сообщаем ему
+                    if (message.reply && !String(message.reply.id).startsWith('ad_') && accounts) {
+                        const target = accounts.findByKey(nameKey(message.reply.user));
+                        if (target && !(account && target.id === account.id)) {
+                            ping([target.id], { kind: 'reply', title: user + ' ответил(а) вам', body: text || '📷 Фото', open: 'room:' + room, tag: 'reply:' + room });
+                        }
+                    }
                 }
                 reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: res.duplicate });
             } catch (err) {
@@ -251,6 +259,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
                 if (!res.ok) return reply(ack, res);
                 if (!res.duplicate) {
                     for (const id of new Set(res.recipients)) io.to('user:' + id).emit('dm-message', res.message);
+                    ping(res.recipients.filter(id => id !== account.id), { kind: 'dm', title: account.name, body: res.message.text, open: 'dm:' + data.convId, tag: 'dm:' + data.convId });
                 }
                 reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: !!res.duplicate });
             } catch (e) { logger.error?.(`dm-send: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
@@ -303,7 +312,11 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
             const res = await groups.send(account, d.groupId, { text: d.text, replyTo: d.replyTo, ad: d.ad, clientId: d.clientId === undefined ? null : d.clientId });
             if (!res.ok) return reply(ack, res);
-            if (!res.duplicate) tellMembers(res.members, 'group-message', res.message);
+            if (!res.duplicate) {
+                tellMembers(res.members, 'group-message', res.message);
+                const g = groups.list(account).find(x => x.id === d.groupId);
+                ping(res.members.filter(id => id !== account.id), { kind: 'group', title: g ? g.name : 'Группа', body: account.name + ': ' + (res.message.text || (res.message.ad ? '🏠 ' + res.message.ad.title : '')), open: 'group:' + d.groupId, tag: 'group:' + d.groupId });
+            }
             reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: !!res.duplicate });
         }));
 
@@ -325,6 +338,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             if (!res.ok) return reply(ack, res);
             tellMembers(res.members, 'group-members', { groupId: d.groupId, added: res.added });
             io.to('user:' + res.added.id).emit('group-invited', { id: res.group.id, name: res.group.name, by: account.name });
+            ping([res.added.id], { kind: 'invite', title: 'Приглашение в группу', body: account.name + ' добавил(а) вас в «' + res.group.name + '»', open: 'group:' + res.group.id, tag: 'invite:' + res.group.id });
             reply(ack, { ok: true, added: res.added });
         }));
 
@@ -375,6 +389,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         }));
 
         socket.on('disconnect', () => {
+            if (account && notifier) notifier.disconnected(account.id);
             const n = (conns.get(ip) || 1) - 1;
             if (n <= 0) conns.delete(ip); else conns.set(ip, n);
             limiters.msgSocket.delete(socket.id);

@@ -62,6 +62,14 @@ else
   echo "Настройки уже есть, ADMIN_TOKEN сохранён"
 fi
 
+# Ключи для push-уведомлений (создаются один раз; менять нельзя — подписки устройств перестанут работать)
+if ! grep -q '^VAPID_PUBLIC_KEY=' "$ENVF"; then
+  ( cd "$APP" && node scripts/vapid.js ) >> "$ENVF"
+  echo "Созданы VAPID-ключи для push"
+fi
+sed -i '/^VAPID_SUBJECT=/d' "$ENVF"
+if [ "$SCHEME" = "https" ]; then echo "VAPID_SUBJECT=https://$DOMAIN" >> "$ENVF"; else echo "VAPID_SUBJECT=mailto:admin@example.com" >> "$ENVF"; fi
+
 echo "== Служба tell"
 cat > /etc/systemd/system/tell.service <<UNIT
 [Unit]

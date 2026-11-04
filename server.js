@@ -12,6 +12,8 @@ const { createAdmin } = require('./src/admin');
 const { createLimiters } = require('./src/rateLimit');
 const { createApp } = require('./src/http');
 const { createSocketLayer } = require('./src/sockets');
+const { PushStore, createPushSender } = require('./src/push');
+const { createNotifier } = require('./src/notify');
 const { AccountStore } = require('./src/accounts');
 const { DmStore } = require('./src/dm');
 const { GroupStore, AdReactions } = require('./src/groups');
@@ -40,6 +42,11 @@ async function start(env = process.env, logger = console) {
     const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await listings.init();
 
+    const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
+    await pushStore.init();
+    const push = createPushSender({ store: pushStore, vapid: cfg.vapid, logger });
+    logger.info(`Push-уведомления: ${push.enabled() ? 'включены' : 'выключены (нет ключей VAPID или пакета web-push)'}`);
+
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
 
@@ -50,10 +57,11 @@ async function start(env = process.env, logger = console) {
         maxHttpBufferSize: cfg.limits.socketBufferBytes,
         allowRequest: (req, cb) => layer.allowRequest(req, cb)
     });
-    layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, logger });
+    const notifier = createNotifier({ io, push, logger });
+    layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

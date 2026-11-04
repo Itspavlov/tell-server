@@ -6,14 +6,15 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/unit.test.js tests/store.test.js tests/sockets.test.js tests/http.test.js tests/accounts.test.js tests/groups.test.js tests/listings.test.js tests/moderation.test.js",
+    "test": "node --test tests/unit.test.js tests/store.test.js tests/sockets.test.js tests/http.test.js tests/accounts.test.js tests/groups.test.js tests/listings.test.js tests/moderation.test.js tests/push.test.js",
     "test:integration": "node --test tests/integration.test.js",
     "backup": "node scripts/backup.js"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "socket.io": "^4.7.2"
+    "socket.io": "^4.7.2",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "socket.io-client": "^4.7.2"

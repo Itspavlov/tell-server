@@ -59,6 +59,7 @@ function loadConfig(env = process.env) {
         trustProxy: env.TRUST_PROXY !== 'false',
         dataDir: env.DATA_DIR ? path.resolve(env.DATA_DIR) : path.join(__dirname, '..', 'data'),
         adminToken,
+        vapid: Object.freeze({ publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || '' }),
 
         limits: Object.freeze({
             nameMin: 2,
@@ -96,7 +97,8 @@ function loadConfig(env = process.env) {
             groupJoin: { windowMs: 60_000, max: 10 },
             groupInvite: { windowMs: 60_000, max: 20 },
             listingSave: { windowMs: 3_600_000, max: 40 },
-            verifyRequest: { windowMs: 3_600_000, max: 5 }
+            verifyRequest: { windowMs: 3_600_000, max: 5 },
+            pushSub: { windowMs: 3_600_000, max: 30 }
         })
     });
 }
