@@ -384,7 +384,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             if (v.error) return reply(ack, v.error);
             const res = await adReacts.toggle(d.adId, d.emoji, v.voter);
             if (!res.ok) return reply(ack, res);
-            io.to('housing').emit('ad-reaction-update', { adId: d.adId, reactions: res.counts });
+            for (const r of cfg.rooms) if (r === 'housing' || r.startsWith('housing-')) io.to(r).emit('ad-reaction-update', { adId: d.adId, reactions: res.counts });
             reply(ack, { ok: true, reactions: res.counts, mine: res.mine });
         }));
 

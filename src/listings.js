@@ -12,6 +12,7 @@ const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, validateImage, fail } = require('./validate');
 
+const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
 const MAX_PER_USER = 20;
 const MAX_PHOTOS = 6;
 const PHOTO_BYTES = 350_000;
@@ -41,6 +42,7 @@ function cleanImage(v, max) {
 function cleanListing(raw, rawProfile) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('BAD_LISTING');
     const type = raw.type === 'sale' ? 'sale' : 'rent';
+    const category = CATEGORIES.includes(raw.category) ? raw.category : 'apartment';
     const title = text(raw.title, 100);
     const priceNum = num(raw.priceNum, 1, 1e9);
     if (title.length < 3 || priceNum === null) return fail('BAD_LISTING');
@@ -77,7 +79,7 @@ function cleanListing(raw, rawProfile) {
         ok: true,
         value: {
             ad: {
-                type, title, priceNum,
+                type, category, title, priceNum,
                 price: text(raw.price, 30) || String(priceNum),
                 location: text(raw.location, 120),
                 description: text(raw.description, 2000),
@@ -114,7 +116,7 @@ class ListingStore {
         const cover = a.thumb || '';
         return {
             id: l.id, ownerId: l.ownerId, created: l.created, updated: l.updated,
-            type: a.type, title: a.title, priceNum: a.priceNum, price: a.price,
+            type: a.type, category: a.category || 'apartment', title: a.title, priceNum: a.priceNum, price: a.price,
             location: a.location, description: a.description,
             image: cover || (full && a.photos[0]) || '',
             photos: full ? a.photos : (cover ? [cover] : []),

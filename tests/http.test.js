@@ -132,7 +132,8 @@ test('корень: прежние поля status/rooms/totalMessages', async (
     const { h, store } = await setup();
     const r = res(); h.root(req(), r);
     assert.equal(r.body.status, 'ok');
-    assert.deepEqual(r.body.rooms, ['housing', 'work', 'market', 'trips']);
+    assert.deepEqual(r.body.rooms, require('../src/config').ROOMS);
+    for (const old of ['housing', 'work', 'market', 'trips']) assert.ok(r.body.rooms.includes(old));
     assert.equal(r.body.totalMessages, 0);
     await store.close();
 });

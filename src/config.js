@@ -7,7 +7,9 @@
 const path = require('path');
 
 // Единственные комнаты, в которые можно писать (как и раньше)
-const ROOMS = ['housing', 'work', 'market', 'trips'];
+// housing — общий чат жилья, housing-* — чаты по типам жилья
+const HOUSING_CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
+const ROOMS = ['housing', ...HOUSING_CATEGORIES.map(c => 'housing-' + c), 'work', 'market', 'trips'];
 
 const DEFAULT_ORIGIN = 'https://gokurort-new.onrender.com';
 const DEV_ORIGINS = [
@@ -108,4 +110,4 @@ function isOriginAllowed(origin, cfg) {
     return cfg.allowedOrigins.includes(normalizeOrigin(origin));
 }
 
-module.exports = { ROOMS, loadConfig, isOriginAllowed, normalizeOrigin };
+module.exports = { ROOMS, HOUSING_CATEGORIES, loadConfig, isOriginAllowed, normalizeOrigin };

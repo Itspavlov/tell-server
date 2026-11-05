@@ -2,7 +2,7 @@
 // Панель модерации. Весь пользовательский текст выводится через textContent — HTML из чатов не исполняется.
 (function () {
     const app = document.getElementById('app');
-    const ROOMS = [['housing', 'Жильё'], ['work', 'Работа'], ['market', 'Продам/Отдам'], ['trips', 'Поездки']];
+    const ROOMS = [['housing', 'Жильё · все'], ['housing-apartment', 'Жильё · квартиры'], ['housing-house', 'Жильё · дома'], ['housing-hotel', 'Жильё · отели'], ['housing-room', 'Жильё · комнаты'], ['housing-guest', 'Жильё · гостевые'], ['work', 'Работа'], ['market', 'Продам/Отдам'], ['trips', 'Поездки']];
     let token = '';
     try { token = sessionStorage.getItem('tell-admin') || ''; } catch (e) {}
     let tab = 'overview', room = 'housing', auto = null, counts = {};

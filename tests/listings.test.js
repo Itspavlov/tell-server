@@ -213,3 +213,18 @@ test('админ: выдача статуса «проверен» только 
     assert.equal(log.includes(TOKEN), false);
     await store.close();
 });
+
+test('категория жилья: сохраняется, по умолчанию «квартира», мусор заменяется', async () => {
+    const { listings } = await setup();
+    const { cleanListing } = require('../src/listings');
+    assert.equal(cleanListing(AD({ category: 'house' }), PROFILE).value.ad.category, 'house');
+    assert.equal(cleanListing(AD({ category: 'guest' }), PROFILE).value.ad.category, 'guest');
+    assert.equal(cleanListing(AD(), PROFILE).value.ad.category, 'apartment');
+    assert.equal(cleanListing(AD({ category: '<script>' }), PROFILE).value.ad.category, 'apartment');
+    assert.ok(listings);
+});
+
+test('чаты жилья по категориям существуют на сервере', () => {
+    const { ROOMS } = require('../src/config');
+    for (const r of ['housing', 'housing-apartment', 'housing-house', 'housing-hotel', 'housing-room', 'housing-guest']) assert.ok(ROOMS.includes(r), r);
+});
