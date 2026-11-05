@@ -153,10 +153,10 @@ test('createApp подключает маршруты (проверка на п�
     const { cfg, store, admin, lim, io } = await setup();
     const routes = [];
     const app = { set() {}, disable() {}, use(...a) { routes.push(['use', a.length]); }, get(p) { routes.push(['GET', p]); }, post(p) { routes.push(['POST', p]); }, delete(p) { routes.push(['DELETE', p]); } };
-    const fakeExpress = () => app; fakeExpress.json = () => (q, r, n) => n();
+    const fakeExpress = () => app; fakeExpress.json = () => (q, r, n) => n(); fakeExpress.raw = fakeExpress.json;
     createApp({ express: fakeExpress, cors: () => (q, s, n) => n(), cfg, store, admin, limiters: lim, io, logger: silent });
     const have = routes.filter(r => r[0] !== 'use').map(r => r.join(' '));
-    for (const need of ['GET /healthz', 'GET /readyz', 'GET /', 'GET /api/messages/:room', 'DELETE /api/messages/:room', 'GET /api/admin/export', 'POST /api/auth/register', 'POST /api/auth/login', 'POST /api/auth/logout', 'GET /api/auth/me']) {
+    for (const need of ['GET /healthz', 'GET /readyz', 'GET /', 'GET /api/messages/:room', 'DELETE /api/messages/:room', 'GET /api/admin/export', 'POST /api/auth/register', 'POST /api/auth/login', 'POST /api/auth/logout', 'GET /api/auth/me', 'POST /api/media/video', 'GET /api/media/:id']) {
         assert.ok(have.includes(need), need);
     }
     await store.close();

@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, media = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -380,15 +380,37 @@ function createHandlers({ cfg, store, admin, accounts, listings, limiters, io, p
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 
-    return { security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
+    // ---- видеосообщения ----
+    async function mediaUpload(req, res) {
+        const u = accounts && accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        if (!media) return res.status(503).json({ ok: false, code: 'SERVER_ERROR' });
+        const rl = limiters.mediaUpload.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await media.save(u.id, Buffer.isBuffer(req.body) ? req.body : null, req.query && req.query.dur);
+        if (!r.ok) return res.status(r.code === 'TOO_LARGE' ? 413 : (r.code === 'STORE_UNAVAILABLE' ? 503 : 400)).json({ ok: false, code: r.code });
+        res.json({ ok: true, id: r.id, dur: r.dur, url: '/api/media/' + r.id });
+    }
+
+    function mediaGet(req, res) {
+        const m = media && media.get(req.params.id);
+        if (!m) return res.status(404).json({ error: 'Не найдено' });
+        res.set('Content-Type', m.mime);
+        res.set('Cache-Control', 'private, max-age=86400');
+        res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+        // sendFile сам обрабатывает Range — без него видео не перематывается в Safari
+        res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
+    }
+
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, media = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, media, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -397,6 +419,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, limit
     app.use(h.security);
     app.get('/healthz', h.healthz);   // без лимита: им пользуется мониторинг Render
     app.get('/readyz', h.readyz);
+    app.get('/api/media/:id', h.mediaGet);   // видео скачивается кусками (Range) — общий лимит ему не нужен
     app.use(h.generalLimit);
     app.get('/', h.root);
     app.get('/api/messages/:room', h.history);
@@ -428,6 +451,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, limit
     app.use('/api/push', express.json({ limit: '4kb' }));
     app.post('/api/push/subscribe', h.pushSubscribe);
     app.post('/api/push/unsubscribe', h.pushUnsubscribe);
+    app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4'], limit: '7mb' }), h.mediaUpload);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/:id', h.listingGet);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);

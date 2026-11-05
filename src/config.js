@@ -100,7 +100,8 @@ function loadConfig(env = process.env) {
             groupInvite: { windowMs: 60_000, max: 20 },
             listingSave: { windowMs: 3_600_000, max: 40 },
             verifyRequest: { windowMs: 3_600_000, max: 5 },
-            pushSub: { windowMs: 3_600_000, max: 30 }
+            pushSub: { windowMs: 3_600_000, max: 30 },
+            mediaUpload: { windowMs: 3_600_000, max: 30 }
         })
     });
 }

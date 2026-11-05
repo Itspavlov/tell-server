@@ -117,7 +117,7 @@ server {
 
     root $SITE;
     index index.html;
-    client_max_body_size 6m;
+    client_max_body_size 8m;
 
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;

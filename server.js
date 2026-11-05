@@ -16,6 +16,7 @@ const { PushStore, createPushSender } = require('./src/push');
 const { createNotifier } = require('./src/notify');
 const { AccountStore } = require('./src/accounts');
 const { DmStore } = require('./src/dm');
+const { MediaStore } = require('./src/media');
 const { GroupStore, AdReactions } = require('./src/groups');
 const { ListingStore } = require('./src/listings');
 
@@ -33,7 +34,9 @@ async function start(env = process.env, logger = console) {
 
     const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger });
     await accounts.init();
-    const dms = new DmStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    const media = new MediaStore({ dataDir: cfg.dataDir, logger });
+    await media.init();
+    const dms = new DmStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, media, logger });
     await dms.init();
     const groups = new GroupStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await groups.init();
@@ -61,11 +64,13 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, media, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);
     sweeper.unref();
+    const mediaSweeper = setInterval(() => media.sweep().catch(() => {}), 6 * 3600 * 1000);
+    mediaSweeper.unref();
 
     await new Promise((resolve) => server.listen(cfg.port, resolve));
     logger.info(`Tell Server v2 запущен на порту ${cfg.port}. Админ-доступ: ${admin.isEnabled() ? 'включён' : 'ВЫКЛЮЧЕН (ADMIN_TOKEN не задан)'}`);

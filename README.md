@@ -114,3 +114,11 @@ Invoke-RestMethod -Method Post -Uri https://tell-server.onrender.com/api/admin/v
 - Ключи создаёт `deploy/setup.sh` (`node scripts/vapid.js`), хранятся в `/etc/tell/env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`). Не меняйте их: старые подписки перестанут работать.
 - Подписки лежат в `push.json` (до 5 устройств на аккаунт; мёртвые удаляются автоматически).
 - iPhone: push работает только у приложения, добавленного на экран «Домой» (iOS 16.4+).
+
+## Видеокружки в личных сообщениях
+
+- Запись в браузере (камера + MediaRecorder, до 60 секунд, ~500 кбит/с), нужен HTTPS.
+- `POST /api/media/video?dur=N` (Bearer, тело — сам файл video/mp4 или video/webm, до 6 МБ, 30 в час на аккаунт): тип проверяется по первым байтам файла. Ответ — `{id, url}`.
+- `GET /api/media/:id` отдаёт файл с поддержкой Range. Идентификатор — 128 бит случайных данных.
+- Видео прикрепляется к сообщению через `dm-send {video:{id}}`; прикрепить можно только своё. Файлы лежат в `DATA_DIR/media`, старше 30 дней удаляются.
+- nginx: `client_max_body_size 8m` (ставит `deploy/setup.sh`).
