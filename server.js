@@ -38,7 +38,7 @@ async function start(env = process.env, logger = console) {
     await media.init();
     const dms = new DmStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, media, logger });
     await dms.init();
-    const groups = new GroupStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    const groups = new GroupStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, media, logger });
     await groups.init();
     const adReacts = new AdReactions({ dataDir: cfg.dataDir, logger });
     await adReacts.init();

@@ -387,7 +387,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, media = null, l
         if (!media) return res.status(503).json({ ok: false, code: 'SERVER_ERROR' });
         const rl = limiters.mediaUpload.hit(u.id);
         if (!rl.ok) return limited(res, rl);
-        const r = await media.save(u.id, Buffer.isBuffer(req.body) ? req.body : null, req.query && req.query.dur);
+        const mediaKind = req.query && req.query.kind === 'voice' ? 'voice' : 'video';
+        const r = await media.save(u.id, Buffer.isBuffer(req.body) ? req.body : null, req.query && req.query.dur, mediaKind);
         if (!r.ok) return res.status(r.code === 'TOO_LARGE' ? 413 : (r.code === 'STORE_UNAVAILABLE' ? 503 : 400)).json({ ok: false, code: r.code });
         res.json({ ok: true, id: r.id, dur: r.dur, url: '/api/media/' + r.id });
     }
@@ -451,7 +452,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, media
     app.use('/api/push', express.json({ limit: '4kb' }));
     app.post('/api/push/subscribe', h.pushSubscribe);
     app.post('/api/push/unsubscribe', h.pushUnsubscribe);
-    app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4'], limit: '7mb' }), h.mediaUpload);
+    app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg'], limit: '7mb' }), h.mediaUpload);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/:id', h.listingGet);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);

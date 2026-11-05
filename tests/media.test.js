@@ -6,6 +6,7 @@ const path = require('path');
 const { MediaStore, sniff } = require('../src/media');
 const { DmStore } = require('../src/dm');
 const { AccountStore } = require('../src/accounts');
+const { GroupStore } = require('../src/groups');
 const { createHandlers } = require('../src/http');
 const { createAdmin } = require('../src/admin');
 const { makeCfg, makeStore, makeIo, limiters, silent } = require('./helpers');
@@ -89,4 +90,45 @@ test('старые видео удаляются', async () => {
     await media.sweep();
     assert.equal(media.get(s.id), null);
     assert.ok(!fs.existsSync(file));
+});
+
+const ogg = (n = 5000) => Buffer.concat([Buffer.from('OggS'), Buffer.alloc(n)]);
+
+test('голосовые: тип audio, лимиты своих размеров, видео и голос не подменяют друг друга', async () => {
+    const { accounts, media, dms, store } = await setup();
+    const a = await mk(accounts, 'Аня'), b = await mk(accounts, 'Борис');
+    const conv = (await dms.open(a, 'Борис')).conv;
+    const v = await media.save(a.id, webm(), 8, 'voice');
+    assert.equal(media.get(v.id).mime, 'audio/webm');
+    assert.equal((await media.save(a.id, ogg(), 8, 'voice')).ok, true);
+    assert.equal((await media.save(a.id, ogg(), 8, 'video')).ok, false);                 // ogg — только для голоса
+    assert.equal((await media.save(a.id, webm(2_600_000), 8, 'voice')).code, 'TOO_LARGE');
+    assert.equal((await media.save(a.id, webm(3_000_000), 8, 'video')).ok, true);
+    assert.equal((await media.save(a.id, webm(), 999, 'voice')).dur, 120);
+    assert.equal((await dms.send(a, conv.id, '', null, { id: v.id })).ok, false);      // голос нельзя выдать за видео
+    const r = await dms.send(a, conv.id, '', null, null, { id: v.id });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.message.voice, { id: v.id, dur: 8 });
+    assert.equal(dms.list(b)[0].last.text, 'Голосовое сообщение');
+    assert.equal((await dms.send(a, conv.id, '', null, { id: v.id }, { id: v.id })).ok, false);
+    await store.close();
+});
+
+test('группы: видео и голос только свои, видны участникам', async () => {
+    const cfg = makeCfg();
+    const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
+    const media = new MediaStore({ dataDir: cfg.dataDir, logger: silent }); await media.init();
+    const groups = new GroupStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, media, logger: silent }); await groups.init();
+    const a = await mk(accounts, 'Аня'), c = await mk(accounts, 'Вера');
+    const g = await groups.create(a, 'Отпуск');
+    const gid = g.group.id;
+    const mine = await media.save(a.id, webm(), 6, 'voice');
+    const theirs = await media.save(c.id, webm(), 6, 'voice');
+    assert.equal((await groups.send(a, gid, { voice: { id: theirs.id } })).ok, false);
+    assert.equal((await groups.send(a, gid, { video: { id: mine.id } })).ok, false);
+    const r = await groups.send(a, gid, { voice: { id: mine.id } });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.message.voice, { id: mine.id, dur: 6 });
+    assert.equal(groups.list(a)[0].last.text, 'Голосовое сообщение');
+    assert.equal((await groups.send(a, gid, {})).ok, false);
 });

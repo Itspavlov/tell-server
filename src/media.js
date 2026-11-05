@@ -9,7 +9,9 @@ const fs = require('fs');
 const path = require('path');
 const { JsonFile } = require('./jsonfile');
 
-const MAX_BYTES = 6_000_000;      // ~60 секунд при 600 кбит/с
+const MAX_BYTES = 6_000_000;      // видео: ~60 секунд при 600 кбит/с
+const MAX_VOICE_BYTES = 2_500_000; // голос: до 2 минут
+const MAX_SEC = { video: 60, voice: 120 };
 const MIN_BYTES = 1_000;
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const ID_RE = /^vm_[0-9a-f]{32}$/;
@@ -18,6 +20,7 @@ const ID_RE = /^vm_[0-9a-f]{32}$/;
 function sniff(buf) {
     if (buf.length > 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return { ext: 'webm', mime: 'video/webm' };
     if (buf.length > 12 && buf.toString('latin1', 4, 8) === 'ftyp') return { ext: 'mp4', mime: 'video/mp4' };
+    if (buf.length > 4 && buf.toString('latin1', 0, 4) === 'OggS') return { ext: 'ogg', mime: 'audio/ogg' };
     return null;
 }
 
@@ -38,15 +41,20 @@ class MediaStore {
         await this.sweep();
     }
 
-    async save(ownerId, buf, dur) {
+    // kind: 'video' (кружок) или 'voice' (голосовое)
+    async save(ownerId, buf, dur, mediaKind = 'video') {
+        if (mediaKind !== 'video' && mediaKind !== 'voice') return { ok: false, code: 'BAD_PAYLOAD' };
         if (!Buffer.isBuffer(buf) || buf.length < MIN_BYTES) return { ok: false, code: 'BAD_PAYLOAD' };
-        if (buf.length > MAX_BYTES) return { ok: false, code: 'TOO_LARGE' };
+        if (buf.length > (mediaKind === 'voice' ? MAX_VOICE_BYTES : MAX_BYTES)) return { ok: false, code: 'TOO_LARGE' };
         const kind = sniff(buf);
         if (!kind) return { ok: false, code: 'BAD_FORMAT' };
+        if (mediaKind === 'video' && kind.ext === 'ogg') return { ok: false, code: 'BAD_FORMAT' };
+        // голос отдаётся как audio/*, видео — как video/*
+        if (mediaKind === 'voice') kind.mime = 'audio/' + kind.ext;
         const id = 'vm_' + crypto.randomBytes(16).toString('hex');
-        const d = Math.max(1, Math.min(60, Math.round(Number(dur) || 0))) || 1;
+        const d = Math.max(1, Math.min(MAX_SEC[mediaKind], Math.round(Number(dur) || 0))) || 1;
         await this.fs.writeFile(path.join(this.dir, id + '.' + kind.ext), buf, { mode: 0o640 });
-        this.items[id] = { owner: ownerId, ext: kind.ext, mime: kind.mime, size: buf.length, dur: d, time: this.now() };
+        this.items[id] = { owner: ownerId, kind: mediaKind, ext: kind.ext, mime: kind.mime, size: buf.length, dur: d, time: this.now() };
         try { await this.file.save({ items: this.items }); }
         catch (e) {
             delete this.items[id];
@@ -65,9 +73,9 @@ class MediaStore {
     }
 
     // Можно ли прикрепить это видео к сообщению от пользователя
-    check(id, ownerId) {
+    check(id, ownerId, kind = 'video') {
         const it = typeof id === 'string' && ID_RE.test(id) ? this.items[id] : null;
-        return it && it.owner === ownerId ? { ok: true, dur: it.dur } : { ok: false };
+        return it && it.owner === ownerId && (it.kind || 'video') === kind ? { ok: true, dur: it.dur } : { ok: false };
     }
 
     async sweep() {

@@ -52,14 +52,14 @@ class DmStore {
         const last = vis[vis.length - 1];
         return {
             id: c.id, with: other, adTitle: c.adTitle || '', adId: c.adId || '',
-            last: last ? { text: last.video ? 'Видеосообщение' : last.text.slice(0, 80), video: !!last.video, time: last.time, mine: last.from === user.id } : null,
+            last: last ? { text: last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80)), video: !!last.video, voice: !!last.voice, time: last.time, mine: last.from === user.id } : null,
             updated: c.updated
         };
     }
 
     _view(c, m) {
         const u = this.accounts.byId(m.from);
-        return { id: m.id, convId: c.id, from: { id: m.from, name: u ? u.name : 'Гость' }, text: m.text, time: m.time, ...(m.video ? { video: m.video } : {}) };
+        return { id: m.id, convId: c.id, from: { id: m.from, name: u ? u.name : 'Гость' }, text: m.text, time: m.time, ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {}) };
     }
 
     // Найти или создать диалог гостя с владельцем объявления
@@ -120,18 +120,24 @@ class DmStore {
     }
 
     // Возвращает { ok, message, recipients: [id аккаунтов] }
-    async send(user, convId, rawText, clientId = null, rawVideo = null) {
+    async send(user, convId, rawText, clientId = null, rawVideo = null, rawVoice = null) {
         const c = this._get(user, convId);
         if (!c) return fail('NO_CONVERSATION');
-        let video = null;
+        if (rawVideo && rawVoice) return fail('BAD_PAYLOAD');
+        let video = null, voice = null;
         if (rawVideo) {
-            const chk = this.media && rawVideo && typeof rawVideo === 'object' ? this.media.check(rawVideo.id, user.id) : { ok: false };
+            const chk = this.media && typeof rawVideo === 'object' ? this.media.check(rawVideo.id, user.id, 'video') : { ok: false };
             if (!chk.ok) return fail('BAD_PAYLOAD');
             video = { id: rawVideo.id, dur: chk.dur };
         }
+        if (rawVoice) {
+            const chk = this.media && typeof rawVoice === 'object' ? this.media.check(rawVoice.id, user.id, 'voice') : { ok: false };
+            if (!chk.ok) return fail('BAD_PAYLOAD');
+            voice = { id: rawVoice.id, dur: chk.dur };
+        }
         const t = normalizeText(rawText || '', this.limits.textMax);
         if (!t.ok) return t;
-        if (!t.value && !video) return fail('EMPTY_MESSAGE');
+        if (!t.value && !video && !voice) return fail('EMPTY_MESSAGE');
         if (clientId !== null && (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId))) return fail('BAD_PAYLOAD');
 
         const owner = this.accounts.findByKey(c.ownerKey);
@@ -140,7 +146,7 @@ class DmStore {
         const rk = clientId ? `${user.id}|${convId}|${clientId}` : null;
         if (rk && this.recent.has(rk)) return { ok: true, message: this.recent.get(rk), recipients, duplicate: true };
 
-        const m = { id: 'dmm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), from: user.id, text: t.value, time: this.now(), ...(video ? { video } : {}) };
+        const m = { id: 'dmm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), from: user.id, text: t.value, time: this.now(), ...(video ? { video } : {}), ...(voice ? { voice } : {}) };
         c.messages.push(m);
         const dropped = [];
         while (c.messages.length > CONV_CAP) dropped.push(c.messages.shift());

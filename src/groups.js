@@ -28,7 +28,8 @@ function cleanAd(ad) {
 }
 
 class GroupStore {
-    constructor({ dataDir, accounts, limits, now = Date.now, logger = console, fsImpl }) {
+    constructor({ dataDir, accounts, limits, media = null, now = Date.now, logger = console, fsImpl }) {
+        this.media = media;
         this.file = new JsonFile({ file: path.join(dataDir, 'groups.json'), fsImpl });
         this.accounts = accounts;
         this.limits = limits;
@@ -63,7 +64,7 @@ class GroupStore {
         const last = g.messages[g.messages.length - 1];
         return {
             id: g.id, name: g.name, members: g.members.length, isOwner: g.ownerId === user.id,
-            last: last ? { text: last.ad ? '🏠 ' + last.ad.title : last.text.slice(0, 80), time: last.time, from: (this.accounts.byId(last.from) || { name: '' }).name } : null,
+            last: last ? { text: last.ad ? '🏠 ' + last.ad.title : (last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80))), time: last.time, from: (this.accounts.byId(last.from) || { name: '' }).name } : null,
             updated: g.updated
         };
     }
@@ -77,7 +78,8 @@ class GroupStore {
         }
         return {
             id: m.id, groupId: m.groupId, from: { id: m.from, name: u ? u.name : 'Гость' },
-            text: m.text, time: m.time, reply: m.reply || null, ad: m.ad || null, reactions, mine
+            text: m.text, time: m.time, reply: m.reply || null, ad: m.ad || null, reactions, mine,
+            ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {})
         };
     }
 
@@ -117,7 +119,7 @@ class GroupStore {
 
     memberIds(id) { const g = this.data.groups[id]; return g ? [...g.members] : []; }
 
-    async send(user, id, { text, replyTo, ad, clientId } = {}) {
+    async send(user, id, { text, replyTo, ad, clientId, video: rawVideo, voice: rawVoice } = {}) {
         const g = this._get(user, id);
         if (!g) return fail('NO_GROUP');
         let body = '';
@@ -128,7 +130,19 @@ class GroupStore {
         }
         const cardAd = ad ? cleanAd(ad) : null;
         if (ad && !cardAd) return fail('BAD_PAYLOAD');
-        if (!body && !cardAd) return fail('EMPTY_MESSAGE');
+        if (rawVideo && rawVoice) return fail('BAD_PAYLOAD');
+        let video = null, voice = null;
+        if (rawVideo) {
+            const chk = this.media && typeof rawVideo === 'object' ? this.media.check(rawVideo.id, user.id, 'video') : { ok: false };
+            if (!chk.ok) return fail('BAD_PAYLOAD');
+            video = { id: rawVideo.id, dur: chk.dur };
+        }
+        if (rawVoice) {
+            const chk = this.media && typeof rawVoice === 'object' ? this.media.check(rawVoice.id, user.id, 'voice') : { ok: false };
+            if (!chk.ok) return fail('BAD_PAYLOAD');
+            voice = { id: rawVoice.id, dur: chk.dur };
+        }
+        if (!body && !cardAd && !video && !voice) return fail('EMPTY_MESSAGE');
         if (clientId !== null && clientId !== undefined && (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId))) return fail('BAD_PAYLOAD');
 
         const rk = clientId ? `${user.id}|${g.id}|${clientId}` : null;
@@ -136,11 +150,13 @@ class GroupStore {
 
         const m = { id: 'gm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), groupId: g.id, from: user.id, text: body, time: this.now() };
         if (cardAd) m.ad = cardAd;
+        if (video) m.video = video;
+        if (voice) m.voice = voice;
         if (typeof replyTo === 'string' && /^gm_[\w-]{1,60}$/.test(replyTo)) {
             const src = g.messages.find(x => x.id === replyTo);
             if (src) {
                 const su = this.accounts.byId(src.from);
-                m.reply = { id: src.id, user: su ? su.name : 'Гость', text: src.text ? src.text.slice(0, 100) : (src.ad ? '🏠 ' + src.ad.title : '') };
+                m.reply = { id: src.id, user: su ? su.name : 'Гость', text: src.text ? src.text.slice(0, 100) : (src.ad ? '🏠 ' + src.ad.title : (src.video ? 'Видеосообщение' : (src.voice ? 'Голосовое сообщение' : ''))) };
             }
         }
         g.messages.push(m);
