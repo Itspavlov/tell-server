@@ -147,6 +147,19 @@ class RequestStore {
         return { ok: true, request: this._view(r, user.id) };
     }
 
+    // Полностью удалить свой запрос (вместе с предложениями к нему)
+    async remove(user, id) {
+        const r = typeof id === 'string' ? this.data.requests[id] : null;
+        if (!r) return fail('REQUEST_NOT_FOUND');
+        if (r.ownerId !== user.id) return fail('NOT_OWNER');
+        const offers = Object.entries(this.data.offers).filter(([, o]) => o.requestId === id);
+        delete this.data.requests[id];
+        for (const [oid] of offers) delete this.data.offers[oid];
+        try { await this.file.save(this.data); }
+        catch (e) { this.data.requests[id] = r; for (const [oid, o] of offers) this.data.offers[oid] = o; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true };
+    }
+
     // Включить/выключить уведомления о подходящем жилье по этому запросу
     async setNotify(user, id, on) {
         const r = typeof id === 'string' ? this.data.requests[id] : null;

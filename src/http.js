@@ -494,6 +494,17 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, request: r.request });
     }
 
+    async function requestDelete(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await requests.remove(user, req.params.id);
+        if (!r.ok) return requestFail(res, r);
+        io.emit('request-changed', { id: req.params.id });
+        res.json({ ok: true });
+    }
+
     function listingsList(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const r = limiters.history.hit(ipOf(req));
@@ -588,7 +599,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -658,6 +669,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/requests/:id/notify', express.json({ limit: '1kb' }), h.requestNotify);
     app.post('/api/requests/:id/status', express.json({ limit: '2kb' }), h.requestStatus);
     app.post('/api/requests/:id', express.json({ limit: '8kb' }), h.requestEdit);
+    app.delete('/api/requests/:id', h.requestDelete);
     app.use(h.notFound);
     app.use(h.onError);
     return app;

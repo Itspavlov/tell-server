@@ -379,3 +379,20 @@ test('HTTP: публикация объявления уведомляет по�
     r = res(); await h.requestNotify(req({ headers: { authorization: 'Bearer ' + a.token }, params: { id: s.requests.list({ viewerId: a.user.id, mine: true })[0].id }, body: { on: false } }), r); assert.equal(r.body.request.notify, false);
     await s.store.close();
 });
+
+test('запрос: владелец удаляет его вместе с предложениями, чужой не может', async () => {
+    const { requests, reg, h, io } = await setup();
+    const a = await reg('Анна'), b = await reg('Борис');
+    const q = (await requests.create(a, REQ())).request;
+    assert.equal((await requests.remove(b, q.id)).code, 'NOT_OWNER');
+    assert.equal((await requests.remove(a, 'nope')).code, 'REQUEST_NOT_FOUND');
+    requests.data.offers.o1 = { id: 'o1', requestId: q.id, ownerId: b.id, listingId: 'l1', status: 'new', created: 1 };
+    let r = res(); await h.requestDelete(req({ headers: { authorization: 'Bearer ' + b.token }, params: { id: q.id } }), r);
+    assert.equal(r.code, 403);
+    r = res(); await h.requestDelete(req({ headers: { authorization: 'Bearer ' + a.token }, params: { id: q.id } }), r);
+    assert.equal(r.code, 200); assert.equal(r.body.ok, true);
+    assert.equal(requests.list({ viewerId: a.id, status: 'all' }).length, 0);
+    assert.equal(Object.keys(requests.data.offers).length, 0);
+    r = res(); await h.requestDelete(req({ headers: { authorization: 'Bearer ' + a.token }, params: { id: q.id } }), r);
+    assert.equal(r.code, 404);
+});
