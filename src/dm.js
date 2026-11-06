@@ -103,6 +103,12 @@ class DmStore {
         return { ok: true, conv: this._summary(user, c), created };
     }
 
+    // Писал ли пользователь хозяину (по ключу имени) хотя бы одно сообщение
+    hasWritten(userId, ownerKey) {
+        const c = this.data.convs[this.pair.get(userId + '|' + ownerKey)];
+        return !!(c && c.messages.some(m => m.from === userId));
+    }
+
     list(user) {
         return Object.values(this.data.convs)
             .filter(c => this._isParticipant(user, c))

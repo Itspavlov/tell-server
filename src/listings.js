@@ -120,6 +120,8 @@ class ListingStore {
         const a = l.ad;
         const u = this.accounts.byId(l.ownerId);
         const cover = a.thumb || '';
+        const ls = this.reviews ? this.reviews.listingStats(l.id) : { rating: null, count: 0 };
+        const os = this.reviews ? this.reviews.ownerStats(l.ownerId) : { rating: null, count: 0 };
         return {
             id: l.id, ownerId: l.ownerId, created: l.created, updated: l.updated,
             type: a.type, category: a.category || 'apartment', title: a.title, priceNum: a.priceNum, price: a.price,
@@ -133,8 +135,9 @@ class ListingStore {
             since: a.since,
             owner: {
                 id: l.ownerId, name: u ? u.name : l.ownerName, phone: l.owner.phone, color: '#FF7A59',
-                since: a.since, about: l.owner.about, avatar: l.owner.avatar, rating: null, reviews: 0, response: ''
-            }
+                since: a.since, about: l.owner.about, avatar: l.owner.avatar, rating: os.rating, reviews: os.count, response: ''
+            },
+            rating: ls.rating, reviewCount: ls.count
         };
     }
 

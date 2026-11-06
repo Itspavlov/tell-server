@@ -11,8 +11,8 @@ const crypto = require('crypto');
 const path = require('path');
 const { JsonFile } = require('./jsonfile');
 
-const GROUP_OF = { dm: 'messages', group: 'messages', reply: 'messages', invite: 'messages', offer: 'offers', match: 'matches', request: 'requests', verify: 'system', listing: 'system' };
-const GROUPS = ['messages', 'offers', 'matches', 'requests'];
+const GROUP_OF = { dm: 'messages', group: 'messages', reply: 'messages', invite: 'messages', offer: 'offers', match: 'matches', request: 'requests', review: 'reviews', verify: 'system', listing: 'system' };
+const GROUPS = ['messages', 'offers', 'matches', 'requests', 'reviews'];
 const CAP = 100;
 
 class Inbox {

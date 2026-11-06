@@ -71,7 +71,8 @@ function createLimiters(rates, now) {
         verifyRequest: make(rates.verifyRequest),
         pushSub: make(rates.pushSub),
         mediaUpload: make(rates.mediaUpload),
-        requestWrite: make(rates.requestWrite)
+        requestWrite: make(rates.requestWrite),
+        reviewWrite: make(rates.reviewWrite)
     };
 }
 

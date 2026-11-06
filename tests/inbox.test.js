@@ -51,7 +51,7 @@ test('центр: настройки по типам; системные отк�
     assert.equal(inbox.add('u1', P({ kind: 'verify', tag: 'v', title: 'Вы проверенный хозяин' })).ok, true, 'системные приходят всегда');
     assert.equal(inbox.setPref('u1', 'system', false), false);
     assert.equal(inbox.setPref('u1', 'нет-такого', false), false);
-    assert.deepEqual(inbox.prefs('u1'), { messages: false, offers: true, matches: true, requests: true });
+    assert.deepEqual(inbox.prefs('u1'), { messages: false, offers: true, matches: true, requests: true, reviews: true });
     inbox.setPref('u1', 'messages', true);
     assert.equal(inbox.add('u1', P()).ok, true);
 });

@@ -67,14 +67,14 @@
     function renderShell() {
         const body = el('div', { id: 'body' });
         const tabs = el('div', { class: 'tabs' });
-        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['audit', 'Журнал']];
+        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['reviews', 'Отзывы'], ['audit', 'Журнал']];
         for (const [id, label] of defs) {
             tabs.append(el('button', { class: 'tab' + (tab === id ? ' on' : ''), onclick: () => { tab = id; stopAuto(); renderShell(); } },
                 label, (id === 'requests' && counts.requests) || (id === 'reports' && counts.reports) ? el('span', { class: 'badge' }, id === 'reports' ? counts.reports : counts.requests) : null));
         }
         app.replaceChildren(el('div', { class: 'wrap' },
             el('div', { class: 'top' }, el('h1', {}, 'Tell — модерация'), el('button', { class: 'btn ghost', onclick: logout }, 'Выйти')), tabs, body));
-        const views = { overview: vOverview, requests: vRequests, users: vUsers, chats: vChats, listings: vListings, reports: vReports, audit: vAudit };
+        const views = { overview: vOverview, requests: vRequests, users: vUsers, chats: vChats, listings: vListings, reports: vReports, reviews: vReviews, audit: vAudit };
         run(body, views[tab]);
     }
 
@@ -186,6 +186,20 @@
                 el('div', { class: 'actions' },
                     el('button', { class: 'btn bad', onclick: () => confirm('Заблокировать «' + r.target + '»?') && act(() => api('POST', '/ban', { name: r.target, banned: true }), 'Заблокирован') }, 'Заблокировать'),
                     el('button', { class: 'btn ok', onclick: () => act(() => api('POST', '/reports/' + encodeURIComponent(r.id) + '/close'), 'Жалоба закрыта', true) }, 'Закрыть'))))));
+    }
+
+    // ---------- Отзывы ----------
+    async function vReviews(body) {
+        const d = await api('GET', '/reviews');
+        if (!d.reviews.length) { body.replaceChildren(el('p', { class: 'mut' }, 'Отзывов пока нет')); return; }
+        body.replaceChildren(...d.reviews.map(r => el('div', { class: 'card' },
+            el('div', { class: 'row' },
+                el('div', { style: 'min-width:0;flex:1' },
+                    el('b', {}, r.author), el('span', { class: 'pill' }, '★ ' + r.rating), el('span', { class: 'mut' }, '  ' + fmt(r.created)),
+                    r.text ? el('div', { class: 'msg' }, r.text) : null,
+                    r.reply ? el('div', { class: 'mut', style: 'margin-top:6px' }, 'Ответ хозяина: ' + r.reply) : null),
+                el('div', { class: 'actions' },
+                    el('button', { class: 'btn bad', onclick: () => confirm('Удалить отзыв?') && act(() => api('DELETE', '/reviews/' + encodeURIComponent(r.id)), 'Отзыв удалён', true) }, 'Удалить'))))));
     }
 
     // ---------- Журнал ----------

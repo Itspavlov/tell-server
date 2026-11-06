@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -315,6 +315,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!(await requireAdmin(req, res, 'delete_listing', { id: trunc(req.params.id, 40) }))) return;
         const r = await listings.removeAny(req.params.id);
         if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        if (reviews) await reviews.dropListing(req.params.id);
         if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'listing', title: 'Объявление удалено', body: 'Модератор удалил ваше объявление «' + trunc(r.title, 60) + '»', open: 'profile', tag: 'listing-removed' });
         await admin.audit('delete_listing', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), ip: ipOf(req) });
         if (io && typeof io.emit === 'function') io.emit('listing-changed', { id: req.params.id, removed: true });
@@ -576,7 +577,74 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!rl.ok) return limited(res, rl);
         const r = await listings.remove(user, req.params.id);
         if (!r.ok) return listingFail(res, r);
+        if (reviews) await reviews.dropListing(req.params.id);
         io.emit('listing-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
+    // ---------- отзывы ----------
+    const reviewFail = (res, r) => res.status(
+        r.code === 'REVIEW_NOT_FOUND' || r.code === 'LISTING_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' ? 503 :
+        (r.code === 'NOT_AUTHOR' || r.code === 'NOT_OWNER' || r.code === 'NEED_CONTACT' || r.code === 'SELF_REVIEW') ? 403 : r.code === 'ALREADY_REPLIED' ? 409 : 400
+    ).json({ ok: false, code: r.code, message: r.message });
+
+    function reviewsList(req, res) {
+        if (!reviews || !listings) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const l = listings.rawById(req.params.id);
+        if (!l) return reviewFail(res, { code: 'LISTING_NOT_FOUND' });
+        const viewer = accounts && accounts.authenticate(bearer(req));
+        res.json({ ok: true, ...reviews.list(l.id, viewer), status: reviews.status(viewer, l), isOwner: !!(viewer && viewer.id === l.ownerId) });
+    }
+
+    async function reviewSave(req, res) {
+        if (!reviews || !listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.reviewWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const l = listings.rawById(req.params.id);
+        if (!l) return reviewFail(res, { code: 'LISTING_NOT_FOUND' });
+        const r = await reviews.save(user, l, req.body);
+        if (!r.ok) return reviewFail(res, r);
+        if (notifier && r.created) notifier.notify([l.ownerId], { kind: 'review', title: 'Новый отзыв: ' + '★'.repeat(r.review.rating), body: user.name + ' об объявлении «' + trunc(l.ad && l.ad.title, 50) + '»', open: 'listing:' + l.id, tag: 'review:' + l.id });
+        res.json({ ok: true, review: r.review, rating: r.rating, count: r.count });
+    }
+
+    async function reviewDelete(req, res) {
+        if (!reviews) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.reviewWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await reviews.remove(user, req.params.id);
+        if (!r.ok) return reviewFail(res, r);
+        res.json({ ok: true });
+    }
+
+    async function reviewReply(req, res) {
+        if (!reviews) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.reviewWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await reviews.reply(user, req.params.id, req.body && req.body.text);
+        if (!r.ok) return reviewFail(res, r);
+        const rv = r.review;
+        if (notifier) notifier.notify([rv.authorId], { kind: 'review', title: 'Хозяин ответил на ваш отзыв', body: trunc(r.review.reply.text, 100), open: 'listing:' + rv.listingId, tag: 'review-reply:' + rv.id });
+        res.json({ ok: true, reply: rv.reply });
+    }
+
+    async function adminReviews(req, res) {
+        if (!reviews) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_reviews', {}))) return;
+        res.json({ ok: true, reviews: reviews.listAll() });
+    }
+
+    async function adminReviewDelete(req, res) {
+        if (!reviews) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'delete_review', { id: trunc(req.params.id, 40) }))) return;
+        const r = await reviews.remove(null, req.params.id, { admin: true });
+        if (!r.ok) return reviewFail(res, r);
+        await admin.audit('delete_review', { id: trunc(req.params.id, 40), author: trunc(r.review.authorName, 40), ip: ipOf(req) });
         res.json({ ok: true });
     }
 
@@ -614,15 +682,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, media, dms, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -652,6 +720,8 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/admin/ban', h.adminBan);
     app.get('/api/admin/listings', h.adminListings);
     app.delete('/api/admin/listings/:id', h.adminDeleteListing);
+    app.get('/api/admin/reviews', h.adminReviews);
+    app.delete('/api/admin/reviews/:id', h.adminReviewDelete);
     app.get('/api/admin/audit', h.adminAudit);
     app.get('/api/admin/reports', h.adminReports);
     app.post('/api/admin/reports/:id/close', h.adminReportClose);
@@ -669,6 +739,10 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/quota', h.listingQuota);
     app.get('/api/listings/:id', h.listingGet);
+    app.get('/api/listings/:id/reviews', h.reviewsList);
+    app.post('/api/listings/:id/reviews', express.json({ limit: '4kb' }), h.reviewSave);
+    app.post('/api/reviews/:id/reply', express.json({ limit: '2kb' }), h.reviewReply);
+    app.delete('/api/reviews/:id', h.reviewDelete);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);
     app.delete('/api/listings/:id', h.listingDelete);
     app.get('/api/notifications', h.inboxList);
