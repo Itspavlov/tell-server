@@ -51,6 +51,15 @@ class ReviewStore {
         return { items, ...this.listingStats(listingId) };
     }
 
+    // Все отзывы на объявления хозяина (для его профиля)
+    forOwner(ownerId, viewer, listings) {
+        const items = Object.values(this.data.items).filter(r => r.ownerId === ownerId).sort((a, b) => b.created - a.created).slice(0, 100).map(r => {
+            const l = listings && listings.rawById(r.listingId);
+            return { ...this._view(r, viewer), listingId: r.listingId, listingTitle: l && l.ad ? l.ad.title : '' };
+        });
+        return { items, ...this.ownerStats(ownerId) };
+    }
+
     // Может ли пользователь писать отзыв: { can, reason, mine }
     status(user, listing) {
         if (!user) return { can: false, reason: 'AUTH_REQUIRED' };

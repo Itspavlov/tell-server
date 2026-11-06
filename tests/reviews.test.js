@@ -115,3 +115,21 @@ test('ошибка записи: отзыв откатывается', async () 
     const r = await post(env, g.token, { rating: 5, text: '' });
     assert.equal(r.code, 503); assert.equal(env.reviews.listingStats(env.lid).count, 0);
 });
+
+test('публичный профиль: по id и по имени, объявления и отзывы хозяина', async () => {
+    const env = await setup(); const g = await env.reg('Гость'); await contact(env, g);
+    await post(env, g.token, { rating: 5, text: 'Класс' });
+    for (const q of [{ id: env.host.user.id }, { name: 'хозяйка' }]) {
+        const r = res(); env.h.userProfile(rq(null, { query: q }), r);
+        assert.equal(r.code, 200, JSON.stringify(r.body));
+        assert.equal(r.body.user.name, 'Хозяйка'); assert.equal(r.body.user.verified, true);
+        assert.equal(r.body.listings.length, 1); assert.equal(r.body.count, 1); assert.equal(r.body.reviews[0].listingTitle, 'Студия у моря');
+        assert.equal(r.body.isMe, false);
+    }
+    const me = res(); env.h.userProfile(rq(env.host.token, { query: { id: env.host.user.id } }), me);
+    assert.equal(me.body.isMe, true);
+    const none = res(); env.h.userProfile(rq(null, { query: { name: 'Никто' } }), none);
+    assert.equal(none.code, 404);
+    const mine = res(); env.h.userProfile(rq(g.token, { query: { id: env.host.user.id } }), mine);
+    assert.equal(mine.body.reviews[0].mine, true);
+});

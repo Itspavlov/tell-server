@@ -633,6 +633,25 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, reply: rv.reply });
     }
 
+    // Публичный профиль человека: по id или по имени (в общих чатах известно только имя)
+    function userProfile(req, res) {
+        if (!accounts || !listings) return res.status(404).json({ error: 'Not found' });
+        const r = limiters.history.hit(ipOf(req));
+        if (!r.ok) return limited(res, r);
+        const q = req.query || {};
+        const u = typeof q.id === 'string' && q.id ? accounts.byId(q.id.slice(0, 40)) : (typeof q.name === 'string' && q.name ? accounts.findByKey(nameKey(q.name.slice(0, 60))) : null);
+        if (!u) return res.status(404).json({ ok: false, code: 'USER_NOT_FOUND', message: 'Профиль не найден' });
+        const viewer = accounts.authenticate(bearer(req));
+        const raws = listings.raws().filter(l => l.ownerId === u.id).sort((a, b) => b.updated - a.updated);
+        const rv = reviews ? reviews.forOwner(u.id, viewer, listings) : { items: [], rating: null, count: 0 };
+        const full = accounts.data && accounts.data.users && accounts.data.users[u.id];
+        res.json({
+            ok: true, isMe: !!(viewer && viewer.id === u.id),
+            user: { id: u.id, name: u.name, verified: !!u.verified, since: full && full.createdAt ? new Date(full.createdAt).getFullYear() : null, avatar: raws[0] ? raws[0].owner.avatar : '', about: raws[0] ? raws[0].owner.about : '' },
+            listings: raws.map(l => listings.light(l)), rating: rv.rating, count: rv.count, reviews: rv.items
+        });
+    }
+
     async function adminReviews(req, res) {
         if (!reviews) return res.status(404).json({ error: 'Not found' });
         if (!(await requireAdmin(req, res, 'view_reviews', {}))) return;
@@ -682,7 +701,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -736,6 +755,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/push/subscribe', h.pushSubscribe);
     app.post('/api/push/unsubscribe', h.pushUnsubscribe);
     app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg'], limit: '7mb' }), h.mediaUpload);
+    app.get('/api/profile', h.userProfile);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/quota', h.listingQuota);
     app.get('/api/listings/:id', h.listingGet);
