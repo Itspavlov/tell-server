@@ -20,6 +20,7 @@ const { MediaStore } = require('./src/media');
 const { GroupStore, AdReactions } = require('./src/groups');
 const { ListingStore, dayKey } = require('./src/listings');
 const { RequestStore } = require('./src/requests');
+const { Inbox } = require('./src/inbox');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -47,6 +48,8 @@ async function start(env = process.env, logger = console) {
     await listings.init();
     const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger, dayOf: (ts) => dayKey(ts, cfg.limits.serviceTz) });
     await requests.init();
+    const inbox = new Inbox({ dataDir: cfg.dataDir, logger });
+    await inbox.init();
 
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
     await pushStore.init();
@@ -63,11 +66,11 @@ async function start(env = process.env, logger = console) {
         maxHttpBufferSize: cfg.limits.socketBufferBytes,
         allowRequest: (req, cb) => layer.allowRequest(req, cb)
     });
-    const notifier = createNotifier({ io, push, logger });
+    const notifier = createNotifier({ io, push, inbox, logger });
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, media, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, media, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);
@@ -94,6 +97,7 @@ async function start(env = process.env, logger = console) {
         force.unref();
         try {
             io.close();
+            await inbox.flush().catch(() => {});
             await store.close();
             logger.info('История сохранена. До свидания.');
             process.exit(0);

@@ -12,7 +12,7 @@ const cut = (s, n) => {
     return t.length > n ? t.slice(0, n - 1) + '…' : t;
 };
 
-function createNotifier({ io, push = null, logger = console }) {
+function createNotifier({ io, push = null, inbox = null, logger = console }) {
     const online = new Map();   // userId -> число открытых соединений
 
     function connected(userId) { online.set(userId, (online.get(userId) || 0) + 1); }
@@ -34,9 +34,15 @@ function createNotifier({ io, push = null, logger = console }) {
         };
         for (const id of new Set(userIds || [])) {
             try {
-                io.to('user:' + id).emit('notify', p);
+                if (inbox) {
+                    const r = inbox.add(id, p);
+                    if (r.skipped) continue;                      // пользователь отключил этот тип
+                    p.id = r.id;
+                }
+                const out = inbox ? { ...p, unread: inbox.unread(id) } : p;
+                io.to('user:' + id).emit('notify', out);
                 if (push && push.enabled() && !isOnline(id)) {
-                    push.send(id, p).catch((e) => logger.warn?.(`notify push: ${e && e.message}`));
+                    push.send(id, out).catch((e) => logger.warn?.(`notify push: ${e && e.message}`));
                 }
             } catch (e) { logger.warn?.(`notify: ${e && e.message}`); }
         }
