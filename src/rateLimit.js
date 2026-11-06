@@ -70,7 +70,8 @@ function createLimiters(rates, now) {
         listingSave: make(rates.listingSave),
         verifyRequest: make(rates.verifyRequest),
         pushSub: make(rates.pushSub),
-        mediaUpload: make(rates.mediaUpload)
+        mediaUpload: make(rates.mediaUpload),
+        requestWrite: make(rates.requestWrite)
     };
 }
 

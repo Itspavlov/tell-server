@@ -18,7 +18,8 @@ const { AccountStore } = require('./src/accounts');
 const { DmStore } = require('./src/dm');
 const { MediaStore } = require('./src/media');
 const { GroupStore, AdReactions } = require('./src/groups');
-const { ListingStore } = require('./src/listings');
+const { ListingStore, dayKey } = require('./src/listings');
+const { RequestStore } = require('./src/requests');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -44,6 +45,8 @@ async function start(env = process.env, logger = console) {
     await adReacts.init();
     const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await listings.init();
+    const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger, dayOf: (ts) => dayKey(ts, cfg.limits.serviceTz) });
+    await requests.init();
 
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
     await pushStore.init();
@@ -64,13 +67,15 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, media, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, media, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);
     sweeper.unref();
     const mediaSweeper = setInterval(() => media.sweep().catch(() => {}), 6 * 3600 * 1000);
     mediaSweeper.unref();
+    const requestSweeper = setInterval(() => requests.sweep().catch(() => {}), 6 * 3600 * 1000);
+    requestSweeper.unref();
 
     await new Promise((resolve) => server.listen(cfg.port, resolve));
     logger.info(`Tell Server v2 запущен на порту ${cfg.port}. Админ-доступ: ${admin.isEnabled() ? 'включён' : 'ВЫКЛЮЧЕН (ADMIN_TOKEN не задан)'}`);

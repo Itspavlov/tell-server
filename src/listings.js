@@ -12,6 +12,12 @@ const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, validateImage, fail } = require('./validate');
 
+// Календарный день по часовому поясу сервиса (единый сброс лимита для всех)
+function dayKey(ts, tz) {
+    try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts)); }
+    catch (e) { return new Date(ts).toISOString().slice(0, 10); }
+}
+
 const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
 const MAX_PER_USER = 20;
 const MAX_PHOTOS = 6;
@@ -99,13 +105,13 @@ class ListingStore {
         this.limits = limits;
         this.now = now;
         this.logger = logger;
-        this.data = { listings: {} };
+        this.data = { listings: {}, quota: {} };
         this.bytes = 0;
     }
 
     async init() {
         const d = await this.file.load({ listings: {} });
-        this.data = { listings: d.listings || {} };
+        this.data = { listings: d.listings || {}, quota: d.quota || {} };
         this.bytes = JSON.stringify(this.data).length;
         this.logger.info?.(`Объявления: ${Object.keys(this.data.listings).length}, ${(this.bytes / 1048576).toFixed(1)} МБ`);
     }
@@ -130,6 +136,15 @@ class ListingStore {
                 since: a.since, about: l.owner.about, avatar: l.owner.avatar, rating: null, reviews: 0, response: ''
             }
         };
+    }
+
+    // Сколько новых объявлений аккаунт опубликовал сегодня. Удаление счётчик не уменьшает.
+    quota(userId) {
+        const limit = this.limits.dailyListings || 3;
+        const day = dayKey(this.now(), this.limits.serviceTz);
+        const q = this.data.quota[userId];
+        const used = q && q.day === day ? q.n : 0;
+        return { used, limit, left: Math.max(0, limit - used), day };
     }
 
     list() {
@@ -159,6 +174,17 @@ class ListingStore {
         const added = JSON.stringify(c.value).length - (prev ? JSON.stringify({ ad: prev.ad, owner: prev.owner }).length : 0);
         if (this.bytes + added > this.limits.maxListingsBytes) return fail('LISTINGS_FULL');
 
+        // Дневной лимит: проверка и учёт идут синхронно (до первого await),
+        // поэтому параллельные запросы не пробьют лимит
+        const isNew = !l;
+        let quotaPrev;
+        if (isNew) {
+            const q = this.quota(user.id);
+            if (q.left <= 0) return fail('DAILY_LIMIT', { quota: q });
+            quotaPrev = this.data.quota[user.id];
+            this.data.quota[user.id] = { day: q.day, n: q.used + 1 };
+        }
+
         const t = this.now();
         if (!l) {
             l = { id: 'l_' + crypto.randomBytes(8).toString('hex'), ownerId: user.id, ownerName: user.name, created: t };
@@ -170,11 +196,12 @@ class ListingStore {
         try { await this.file.save(this.data); }
         catch (e) {
             this.bytes = oldBytes;
+            if (isNew) { if (quotaPrev === undefined) delete this.data.quota[user.id]; else this.data.quota[user.id] = quotaPrev; }
             if (prev) this.data.listings[l.id] = prev; else delete this.data.listings[l.id];
             this.logger.error?.(`listings: ${e.code || e.message}`);
             return fail('STORE_UNAVAILABLE');
         }
-        return { ok: true, listing: this._compose(l, true) };
+        return { ok: true, listing: this._compose(l, true), quota: this.quota(user.id) };
     }
 
     // Для модерации: все объявления с владельцами
@@ -209,4 +236,4 @@ class ListingStore {
     }
 }
 
-module.exports = { ListingStore, cleanListing };
+module.exports = { ListingStore, cleanListing, dayKey };

@@ -119,7 +119,7 @@ test('объявление: опасные данные отклоняются �
 });
 
 test('объявление: максимум 20 на человека и лимит размера хранилища', async () => {
-    const { h, reg, store } = await setup();
+    const { h, reg, store } = await setup({ dailyListings: 100 });
     const u = await reg('Хозяйка');
     for (let i = 0; i < 20; i++) { const r = res(); await h.listingSave(req({ headers: auth(u.token), ip: '9.9.9.' + i, body: { ad: AD({ title: 'Объявление ' + i }) } }), r); assert.equal(r.code, 200, 'i=' + i); }
     const r = res(); await h.listingSave(req({ headers: auth(u.token), ip: '9.9.9.99', body: { ad: AD() } }), r);

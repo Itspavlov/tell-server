@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, media = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, media = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -326,8 +326,68 @@ function createHandlers({ cfg, store, admin, accounts, listings, media = null, l
     // ---------- объявления ----------
     const listingFail = (res, r) => res.status(
         r.code === 'LISTING_NOT_FOUND' ? 404 : (r.code === 'NOT_OWNER' || r.code === 'NOT_VERIFIED') ? 403 :
-        (r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL') ? 503 : 400
-    ).json({ ok: false, code: r.code, message: r.message });
+        (r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL') ? 503 : r.code === 'DAILY_LIMIT' ? 429 : 400
+    ).json({ ok: false, code: r.code, message: r.message, quota: r.quota });
+
+    // ---------- запросы арендаторов ----------
+    const requestFail = (res, r) => res.status(
+        r.code === 'REQUEST_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 : r.code === 'REQUEST_WAIT' ? 429 :
+        r.code === 'STORE_UNAVAILABLE' ? 503 : r.code === 'REQUEST_DUPLICATE' ? 409 : 400
+    ).json({ ok: false, code: r.code, message: r.message, wait: r.wait });
+    const needUser = (req, res) => {
+        const user = accounts && accounts.authenticate(bearer(req));
+        if (!user) res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
+        return user || null;
+    };
+
+    function requestsList(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const user = accounts && accounts.authenticate(bearer(req));
+        const q = req.query || {};
+        const mine = q.mine === '1';
+        if (mine && !user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
+        const status = ['active', 'found', 'closed', 'expired', 'all'].includes(q.status) ? q.status : 'active';
+        res.json({
+            ok: true,
+            requests: requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine }),
+            cooldown: user ? requests.cooldown(user.id) : 0
+        });
+    }
+
+    async function requestCreate(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await requests.create(user, req.body);
+        if (!r.ok) return requestFail(res, r);
+        io.emit('request-changed', { id: r.request.id });
+        res.json({ ok: true, request: r.request, cooldown: r.cooldown });
+    }
+
+    async function requestEdit(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await requests.edit(user, req.params.id, req.body);
+        if (!r.ok) return requestFail(res, r);
+        io.emit('request-changed', { id: r.request.id });
+        res.json({ ok: true, request: r.request });
+    }
+
+    async function requestStatus(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await requests.setStatus(user, req.params.id, req.body && req.body.status);
+        if (!r.ok) return requestFail(res, r);
+        io.emit('request-changed', { id: r.request.id });
+        res.json({ ok: true, request: r.request });
+    }
 
     function listingsList(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
@@ -354,7 +414,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, media = null, l
         const r = await listings.save(user, req.body);
         if (!r.ok) return listingFail(res, r);
         io.emit('listing-changed', { id: r.listing.id });
-        res.json({ ok: true, listing: r.listing });
+        res.json({ ok: true, listing: r.listing, quota: r.quota });
+    }
+
+    // «Сегодня опубликовано: 2 из 3»
+    function listingQuota(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const user = accounts && accounts.authenticate(bearer(req));
+        if (!user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
+        res.json({ ok: true, quota: listings.quota(user.id) });
     }
 
     async function listingDelete(req, res) {
@@ -403,15 +471,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, media = null, l
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, media = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, media = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, media, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, media, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -454,9 +522,14 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, media
     app.post('/api/push/unsubscribe', h.pushUnsubscribe);
     app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg'], limit: '7mb' }), h.mediaUpload);
     app.get('/api/listings', h.listingsList);
+    app.get('/api/listings/quota', h.listingQuota);
     app.get('/api/listings/:id', h.listingGet);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);
     app.delete('/api/listings/:id', h.listingDelete);
+    app.get('/api/requests', h.requestsList);
+    app.post('/api/requests', express.json({ limit: '8kb' }), h.requestCreate);
+    app.post('/api/requests/:id/status', express.json({ limit: '2kb' }), h.requestStatus);
+    app.post('/api/requests/:id', express.json({ limit: '8kb' }), h.requestEdit);
     app.use(h.notFound);
     app.use(h.onError);
     return app;

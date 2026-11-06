@@ -77,6 +77,11 @@ function loadConfig(env = process.env) {
             maxConnectionsPerIp: 25,
             dupWindowMs: 5000,
             violationLimit: 8,
+            dailyListings: intEnv(env, 'DAILY_LISTINGS', 3, 1, 100),
+            requestCooldownSec: intEnv(env, 'REQUEST_COOLDOWN_SEC', 60, 1, 3600),
+            maxActiveRequests: 5,
+            requestTtlDays: 14,
+            serviceTz: env.SERVICE_TZ || 'Europe/Moscow',
             maxListingsBytes: intEnv(env, 'MAX_LISTINGS_MB', 100, 5, 1000) * 1024 * 1024
         }),
 
@@ -99,6 +104,7 @@ function loadConfig(env = process.env) {
             groupJoin: { windowMs: 60_000, max: 10 },
             groupInvite: { windowMs: 60_000, max: 20 },
             listingSave: { windowMs: 3_600_000, max: 40 },
+            requestWrite: { windowMs: 60_000, max: 20 },
             verifyRequest: { windowMs: 3_600_000, max: 5 },
             pushSub: { windowMs: 3_600_000, max: 30 },
             mediaUpload: { windowMs: 3_600_000, max: 30 }
