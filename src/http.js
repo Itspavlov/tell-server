@@ -424,6 +424,16 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, request: r.request });
     }
 
+    async function requestNotify(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await requests.setNotify(user, req.params.id, !!(req.body && req.body.on));
+        if (!r.ok) return requestFail(res, r);
+        res.json({ ok: true, request: r.request });
+    }
+
     async function requestStatus(req, res) {
         if (!requests) return res.status(404).json({ error: 'Not found' });
         const user = needUser(req, res); if (!user) return;
@@ -461,6 +471,18 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!r.ok) return listingFail(res, r);
         io.emit('listing-changed', { id: r.listing.id });
         res.json({ ok: true, listing: r.listing, quota: r.quota });
+        // арендаторам, чей запрос подошёл под это жильё (новое или изменённое), уходит уведомление
+        if (requests && notifier) {
+            const raw = listings.rawById(r.listing.id);
+            if (raw) requests.matchesNotify(raw).then((list) => list.forEach((n) => {
+                notifier.notify([n.ownerId], {
+                    kind: 'match',
+                    title: n.count > 1 ? 'Найдено жильё под ' + n.count + ' ваших запроса' : 'Найдено жильё под ваш запрос',
+                    body: trunc(raw.ad.price, 30) + ' · ' + trunc(raw.ad.title, 80), open: 'profile', tag: 'match-' + n.requests[0]
+                });
+                io.emit('request-changed', { id: n.requests[0] });
+            })).catch(() => {});
+        }
     }
 
     // «Сегодня опубликовано: 2 из 3»
@@ -517,7 +539,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestNotify, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, media = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -579,6 +601,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/requests/:id/offers', express.json({ limit: '2kb' }), h.requestOffer);
     app.post('/api/requests/:id/offers/:oid/reject', express.json({ limit: '1kb' }), h.requestOfferReject);
     app.post('/api/requests', express.json({ limit: '8kb' }), h.requestCreate);
+    app.post('/api/requests/:id/notify', express.json({ limit: '1kb' }), h.requestNotify);
     app.post('/api/requests/:id/status', express.json({ limit: '2kb' }), h.requestStatus);
     app.post('/api/requests/:id', express.json({ limit: '8kb' }), h.requestEdit);
     app.use(h.notFound);

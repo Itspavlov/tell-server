@@ -201,7 +201,7 @@ class ListingStore {
             this.logger.error?.(`listings: ${e.code || e.message}`);
             return fail('STORE_UNAVAILABLE');
         }
-        return { ok: true, listing: this._compose(l, true), quota: this.quota(user.id) };
+        return { ok: true, listing: this._compose(l, true), quota: this.quota(user.id), created: isNew };
     }
 
     // Для подбора: объявления в «сыром» виде и лёгкая карточка для показа

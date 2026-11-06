@@ -65,7 +65,7 @@ class RequestStore {
             id: r.id, ownerId: r.ownerId, ownerName: r.ownerName, created: r.created, updated: r.updated,
             expires: r.created + this._ttl(), status: this._status(r), mine: viewerId === r.ownerId,
             category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
-            guests: r.guests, budget: r.budget, text: r.text
+            guests: r.guests, budget: r.budget, text: r.text, notify: r.notify !== false
         };
     }
 
@@ -105,7 +105,7 @@ class RequestStore {
         const id = 'r_' + crypto.randomBytes(8).toString('hex');
         const prevLast = this.data.lastPost[user.id];
         this.data.lastPost[user.id] = t;
-        const r = { id, ownerId: user.id, ownerName: user.name, created: t, updated: t, status: 'active', sig: s, ...c.value };
+        const r = { id, ownerId: user.id, ownerName: user.name, created: t, updated: t, status: 'active', sig: s, notify: true, notified: [], ...c.value };
         this.data.requests[id] = r;
         try { await this.file.save(this.data); }
         catch (e) {
@@ -145,6 +145,46 @@ class RequestStore {
         try { await this.file.save(this.data); }
         catch (e) { r.status = prev; return fail('STORE_UNAVAILABLE'); }
         return { ok: true, request: this._view(r, user.id) };
+    }
+
+    // Включить/выключить уведомления о подходящем жилье по этому запросу
+    async setNotify(user, id, on) {
+        const r = typeof id === 'string' ? this.data.requests[id] : null;
+        if (!r) return fail('REQUEST_NOT_FOUND');
+        if (r.ownerId !== user.id) return fail('NOT_OWNER');
+        const prev = r.notify;
+        r.notify = !!on;
+        try { await this.file.save(this.data); } catch (e) { r.notify = prev; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, request: this._view(r, user.id) };
+    }
+
+    // Новое или изменённое объявление: кого из арендаторов оно подходит.
+    // Каждая пара «запрос — объявление» уведомляется один раз (запоминается), поэтому дублей нет.
+    // Если подошло несколько запросов одного человека, уведомление одно.
+    async matchesNotify(l) {
+        const hit = [];
+        for (const r of Object.values(this.data.requests)) {
+            if (r.notify === false || r.ownerId === l.ownerId || this._status(r) !== 'active') continue;
+            r.notified = r.notified || [];
+            if (r.notified.includes(l.id) || !matches(r, l)) continue;
+            r.notified.push(l.id);
+            if (r.notified.length > 200) r.notified.shift();
+            hit.push(r);
+        }
+        if (!hit.length) return [];
+        try { await this.file.save(this.data); } catch (e) { this.logger.error?.(`requests notify: ${e.code || e.message}`); }
+        const byOwner = new Map();
+        for (const r of hit) { const a = byOwner.get(r.ownerId) || []; a.push(r); byOwner.set(r.ownerId, a); }
+        return Array.from(byOwner, ([ownerId, rs]) => ({ ownerId, requests: rs.map(x => x.id), count: rs.length }));
+    }
+
+    // Запросы, у которых только что закончился срок: владельцам сообщаем один раз
+    async expireDue() {
+        const due = Object.values(this.data.requests).filter(r => this._status(r) === 'expired' && !r.expiredNotified);
+        if (!due.length) return [];
+        for (const r of due) r.expiredNotified = true;
+        try { await this.file.save(this.data); } catch (e) { for (const r of due) delete r.expiredNotified; return []; }
+        return due.map(r => ({ ownerId: r.ownerId, id: r.id, city: r.city }));
     }
 
     // ---------- подбор и предложения ----------

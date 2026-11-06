@@ -303,3 +303,79 @@ test('HTTP: найдено вариантов при создании, пред�
     r = res(); h.requestsList(req({ headers: ha, query: { mine: '1' } }), r); assert.equal(r.body.requests[0].offerCount, 1);
     await s.store.close();
 });
+
+// ---------- уведомления о подходящем жилье ----------
+test('уведомления: подошло новое жильё — один раз на пару «запрос — объявление»', async () => {
+    const { requests, listings, reg, add, owner, store } = await withListings();
+    const a = await reg('Анна'), b = await reg('Борис');
+    await requests.create(a, REQ());
+    const id1 = await add({ title: 'Подходит' });
+    let n = await requests.matchesNotify(listings.rawById(id1));
+    assert.equal(n.length, 1); assert.equal(n[0].ownerId, a.id);
+    assert.deepEqual(await requests.matchesNotify(listings.rawById(id1)), [], 'повтор не уведомляет');
+    const id2 = await add({ title: 'Дорого', priceNum: 9000 });
+    assert.deepEqual(await requests.matchesNotify(listings.rawById(id2)), [], 'не подходит по цене');
+    // правка: цена снизилась, теперь подходит — уведомление уходит
+    await listings.save(owner, { id: id2, ad: LAD({ title: 'Дорого', priceNum: 3000 }), profile: {} });
+    n = await requests.matchesNotify(listings.rawById(id2));
+    assert.equal(n.length, 1);
+    await store.close();
+});
+
+test('уведомления: выключенные, закрытые и собственные запросы не получают', async () => {
+    const { requests, listings, reg, add, owner, clock, store } = await withListings();
+    const a = await reg('Анна'), b = await reg('Борис');
+    const q1 = (await requests.create(a, REQ())).request;
+    clock.t += 61000;
+    await requests.create(b, REQ({ city: 'Адлер', text: 'другой' }));
+    assert.equal((await requests.setNotify(b, (requests.list({ viewerId: b.id, mine: true })[0]).id, false)).request.notify, false);
+    assert.equal((await requests.setNotify(a, requests.list({ viewerId: b.id, mine: true })[0] ? q1.id : q1.id, true)).ok, true);
+    assert.equal((await requests.setNotify(b, q1.id, false)).code, 'NOT_OWNER');
+    const id = await add();
+    const n = await requests.matchesNotify(listings.rawById(id));
+    assert.deepEqual(n.map(x => x.ownerId), [a.id], 'только у кого уведомления включены');
+    await requests.setStatus(a, q1.id, 'found');
+    const id2 = await add({ title: 'Ещё' });
+    assert.deepEqual(await requests.matchesNotify(listings.rawById(id2)), [], 'закрытый запрос не уведомляется');
+    await store.close();
+});
+
+test('уведомления: несколько запросов одного человека — одно уведомление; свой объект не уведомляет', async () => {
+    const { requests, listings, reg, add, owner, clock, store } = await withListings();
+    const a = await reg('Анна');
+    await requests.create(a, REQ()); clock.t += 61000;
+    await requests.create(a, REQ({ text: 'второй запрос' }));
+    const id = await add();
+    const n = await requests.matchesNotify(listings.rawById(id));
+    assert.equal(n.length, 1); assert.equal(n[0].count, 2);
+    await requests.create(owner, REQ({ text: 'хозяйка сама ищет' }));
+    const id2 = await add({ title: 'Другое' });
+    assert.ok(!(await requests.matchesNotify(listings.rawById(id2))).some(x => x.ownerId === owner.id));
+    await store.close();
+});
+
+test('срок запроса: об окончании сообщаем один раз', async () => {
+    const { requests, reg, clock, store } = await withListings();
+    const a = await reg('Анна');
+    await requests.create(a, REQ());
+    assert.deepEqual(await requests.expireDue(), []);
+    clock.t += 15 * DAY;
+    const due = await requests.expireDue();
+    assert.equal(due.length, 1); assert.equal(due[0].ownerId, a.id);
+    assert.deepEqual(await requests.expireDue(), []);
+    await store.close();
+});
+
+test('HTTP: публикация объявления уведомляет подходящего арендатора', async () => {
+    const s = await setup();
+    const notes = [];
+    const notifier = { notify: (ids, p) => notes.push({ ids, p }) };
+    const h = createHandlers({ cfg: s.cfg, store: s.store, admin: createAdmin({ token: '', dataDir: s.cfg.dataDir, logger: silent }), accounts: s.accounts, listings: s.listings, requests: s.requests, limiters: limiters(s.cfg), io: s.io, notifier, logger: silent });
+    const a = await s.accounts.register('Анна', PW), o = await s.accounts.register('Хозяйка', PW); await s.accounts.setVerified(nameKey('Хозяйка'), true);
+    let r = res(); await h.requestCreate(req({ headers: { authorization: 'Bearer ' + a.token }, body: REQ() }), r); assert.equal(r.body.matches, 0);
+    r = res(); await h.listingSave(req({ headers: { authorization: 'Bearer ' + o.token }, body: { ad: LAD(), profile: {} } }), r); assert.equal(r.code, 200);
+    await new Promise(x => setTimeout(x, 30));
+    assert.equal(notes.length, 1); assert.equal(notes[0].p.kind, 'match'); assert.deepEqual(notes[0].ids, [a.user.id]);
+    r = res(); await h.requestNotify(req({ headers: { authorization: 'Bearer ' + a.token }, params: { id: s.requests.list({ viewerId: a.user.id, mine: true })[0].id }, body: { on: false } }), r); assert.equal(r.body.request.notify, false);
+    await s.store.close();
+});

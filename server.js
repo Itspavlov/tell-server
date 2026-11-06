@@ -76,6 +76,11 @@ async function start(env = process.env, logger = console) {
     mediaSweeper.unref();
     const requestSweeper = setInterval(() => requests.sweep().catch(() => {}), 6 * 3600 * 1000);
     requestSweeper.unref();
+    // раз в 10 минут: сообщаем, что у запроса закончился срок
+    const expirer = setInterval(() => requests.expireDue().then((list) => list.forEach((x) => notifier.notify([x.ownerId], {
+        kind: 'request', title: 'Срок запроса истёк', body: (x.city ? x.city + ': ' : '') + 'можно создать новый запрос', open: 'profile', tag: 'req-exp-' + x.id
+    }))).catch(() => {}), 10 * 60 * 1000);
+    expirer.unref();
 
     await new Promise((resolve) => server.listen(cfg.port, resolve));
     logger.info(`Tell Server v2 запущен на порту ${cfg.port}. Админ-доступ: ${admin.isEnabled() ? 'включён' : 'ВЫКЛЮЧЕН (ADMIN_TOKEN не задан)'}`);
