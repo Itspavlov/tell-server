@@ -9,7 +9,7 @@
 //   сервер -> клиент: room-history, new-message, reaction-update, room-cleared,
 //                     server-hello {protocol:2}, send-error
 // Личные сообщения (только для вошедших в аккаунт):
-//   dm-open, dm-list, dm-history, dm-send  (все с ack);  сервер -> dm-message
+//   dm-open, dm-list, dm-history, dm-send, dm-read, dm-block, dm-report  (все с ack);  сервер -> dm-message, dm-read
 // Событие clear-room УДАЛЕНО: удалять сообщения через сокет нельзя.
 // ============================================
 
@@ -23,7 +23,7 @@ const { cleanAd } = require('./groups');
 
 const KNOWN_EVENTS = new Set([
     'join-room', 'leave-room', 'send-message', 'react',
-    'dm-open', 'dm-list', 'dm-history', 'dm-send', 'dm-delete',
+    'dm-open', 'dm-list', 'dm-history', 'dm-send', 'dm-delete', 'dm-read', 'dm-block', 'dm-report',
     'group-create', 'group-list', 'group-open', 'group-send', 'group-react',
     'group-invite', 'group-join', 'group-leave', 'ad-reactions', 'ad-react'
 ]);
@@ -274,6 +274,29 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         socket.on('dm-delete', safe('dm-delete', async (data, ack) => {
             if (!needAuth(ack)) return;
             reply(ack, await dms.remove(account, data && data.convId));
+        }));
+
+        socket.on('dm-read', safe('dm-read', async (data, ack) => {
+            if (!needAuth(ack)) return;
+            if (!data || typeof data !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const r = await dms.markRead(account, data.convId);
+            if (!r.ok) return reply(ack, r);
+            if (r.changed && r.otherId) io.to('user:' + r.otherId).emit('dm-read', { convId: data.convId, time: r.time });
+            reply(ack, { ok: true });
+        }));
+
+        socket.on('dm-block', safe('dm-block', async (data, ack) => {
+            if (!needAuth(ack)) return;
+            if (!limiters.joinSocket.hit(socket.id).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!data || typeof data !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            reply(ack, await dms.block(account, data.convId, !!data.on));
+        }));
+
+        socket.on('dm-report', safe('dm-report', async (data, ack) => {
+            if (!needAuth(ack)) return;
+            if (!limiters.joinSocket.hit(socket.id).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!data || typeof data !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            reply(ack, await dms.report(account, data.convId, data.reason, data.text));
         }));
 
         // ---------------- группы друзей ----------------

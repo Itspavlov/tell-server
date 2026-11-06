@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -286,6 +286,21 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (typeof b.name !== 'string') return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD' });
         if (!(await accounts.rejectVerification(nameKey(b.name)))) return res.status(404).json({ ok: false, code: 'NO_REQUEST' });
         await admin.audit('verify_reject', { target: trunc(b.name, 40), ip: ipOf(req) });
+        res.json({ ok: true });
+    }
+
+    async function adminReports(req, res) {
+        if (!dms) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_reports', {}))) return;
+        res.json({ ok: true, reports: dms.reportsList({ status: req.query && req.query.status === 'all' ? 'all' : 'open' }) });
+    }
+
+    async function adminReportClose(req, res) {
+        if (!dms) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'close_report', { id: trunc(req.params.id, 40) }))) return;
+        const r = await dms.closeReport(req.params.id);
+        if (!r.ok) return res.status(r.code === 'REPORT_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        await admin.audit('close_report', { id: trunc(req.params.id, 40), ip: ipOf(req) });
         res.json({ ok: true });
     }
 
@@ -599,15 +614,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, media, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, media, dms, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -638,6 +653,8 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/admin/listings', h.adminListings);
     app.delete('/api/admin/listings/:id', h.adminDeleteListing);
     app.get('/api/admin/audit', h.adminAudit);
+    app.get('/api/admin/reports', h.adminReports);
+    app.post('/api/admin/reports/:id/close', h.adminReportClose);
     app.use('/api/auth', express.json({ limit: '2kb' }));
     app.post('/api/auth/register', h.register);
     app.post('/api/auth/login', h.login);

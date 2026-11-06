@@ -67,14 +67,14 @@
     function renderShell() {
         const body = el('div', { id: 'body' });
         const tabs = el('div', { class: 'tabs' });
-        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['audit', 'Журнал']];
+        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['audit', 'Журнал']];
         for (const [id, label] of defs) {
             tabs.append(el('button', { class: 'tab' + (tab === id ? ' on' : ''), onclick: () => { tab = id; stopAuto(); renderShell(); } },
-                label, id === 'requests' && counts.requests ? el('span', { class: 'badge' }, counts.requests) : null));
+                label, (id === 'requests' && counts.requests) || (id === 'reports' && counts.reports) ? el('span', { class: 'badge' }, id === 'reports' ? counts.reports : counts.requests) : null));
         }
         app.replaceChildren(el('div', { class: 'wrap' },
             el('div', { class: 'top' }, el('h1', {}, 'Tell — модерация'), el('button', { class: 'btn ghost', onclick: logout }, 'Выйти')), tabs, body));
-        const views = { overview: vOverview, requests: vRequests, users: vUsers, chats: vChats, listings: vListings, audit: vAudit };
+        const views = { overview: vOverview, requests: vRequests, users: vUsers, chats: vChats, listings: vListings, reports: vReports, audit: vAudit };
         run(body, views[tab]);
     }
 
@@ -168,6 +168,24 @@
                         el('button', { class: 'btn bad', onclick: () => confirm('Удалить объявление «' + (l.title || '') + '»?') && act(() => api('DELETE', '/listings/' + encodeURIComponent(l.id)), 'Удалено', true) }, 'Удалить'),
                         el('button', { class: 'btn', onclick: () => confirm('Заблокировать «' + l.ownerName + '» и снять проверку?') && act(async () => { await api('POST', '/verify', { name: l.ownerName, verified: false }); await api('POST', '/ban', { name: l.ownerName, banned: true }); }, 'Хозяин заблокирован') }, 'Заблокировать хозяина'))));
         }));
+    }
+
+    // ---------- Жалобы на личные сообщения ----------
+    const REASONS = { spam: 'Спам', scam: 'Мошенничество', abuse: 'Оскорбления', other: 'Другое' };
+    async function vReports(body) {
+        const d = await api('GET', '/reports');
+        counts.reports = d.reports.length;
+        if (!d.reports.length) { body.replaceChildren(el('p', { class: 'mut' }, 'Новых жалоб нет')); return; }
+        body.replaceChildren(...d.reports.map(r => el('div', { class: 'card' },
+            el('div', { class: 'row' },
+                el('div', { style: 'min-width:0;flex:1' },
+                    el('b', {}, r.reporter + ' → ' + r.target), el('span', { class: 'pill bad' }, REASONS[r.reason] || r.reason), el('span', { class: 'mut' }, '  ' + fmt(r.time)),
+                    r.text ? el('div', { class: 'msg' }, r.text) : null,
+                    el('div', { class: 'mut', style: 'margin-top:8px' }, 'Последние сообщения диалога:'),
+                    ...r.messages.map(m => el('div', { class: 'msg' }, (m.from === 'reporter' ? r.reporter : r.target) + ': ' + m.text))),
+                el('div', { class: 'actions' },
+                    el('button', { class: 'btn bad', onclick: () => confirm('Заблокировать «' + r.target + '»?') && act(() => api('POST', '/ban', { name: r.target, banned: true }), 'Заблокирован') }, 'Заблокировать'),
+                    el('button', { class: 'btn ok', onclick: () => act(() => api('POST', '/reports/' + encodeURIComponent(r.id) + '/close'), 'Жалоба закрыта', true) }, 'Закрыть'))))));
     }
 
     // ---------- Журнал ----------

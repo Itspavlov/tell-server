@@ -12,6 +12,8 @@ const { normalizeName, normalizeText, fail, CLIENT_ID_RE } = require('./validate
 const { nameKey } = require('./accounts');
 
 const CONV_CAP = 500;
+const BLOCK_CAP = 200, REPORT_CAP = 500, REPORT_REASONS = ['spam', 'scam', 'abuse', 'other'];
+const DAY = 86400000;
 
 class DmStore {
     constructor({ dataDir, accounts, limits, media = null, now = Date.now, logger = console, fsImpl }) {
@@ -21,14 +23,14 @@ class DmStore {
         this.limits = limits;
         this.now = now;
         this.logger = logger;
-        this.data = { convs: {} };
+        this.data = { convs: {}, blocks: {}, reports: [] };
         this.pair = new Map();
         this.recent = new Map();
     }
 
     async init() {
         const d = await this.file.load({ convs: {} });
-        this.data = { convs: d.convs || {} };
+        this.data = { convs: d.convs || {}, blocks: d.blocks || {}, reports: d.reports || [] };
         for (const c of Object.values(this.data.convs)) this.pair.set(c.guestId + '|' + c.ownerKey, c.id);
         this.logger.info?.(`Личные диалоги: ${this.pair.size}`);
     }
@@ -45,15 +47,26 @@ class DmStore {
         return cut ? c.messages.filter(m => m.time > cut) : c.messages;
     }
 
+    _otherId(user, c) {
+        if (c.guestId === user.id) { const o = this.accounts.findByKey(c.ownerKey); return o ? o.id : null; }
+        return c.guestId;
+    }
+    _blocked(byId, id) { return !!(byId && id && (this.data.blocks[byId] || []).includes(id)); }
+
     _summary(user, c) {
         const iAmGuest = c.guestId === user.id;
+        const otherId = this._otherId(user, c);
+        const myRead = (c.reads && c.reads[user.id]) || 0;
         const other = iAmGuest ? c.ownerName : (this.accounts.byId(c.guestId) || { name: 'Гость' }).name;
         const vis = this._visible(user, c);
         const last = vis[vis.length - 1];
         return {
             id: c.id, with: other, adTitle: c.adTitle || '', adId: c.adId || '',
             last: last ? { text: last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80)), video: !!last.video, voice: !!last.voice, time: last.time, mine: last.from === user.id } : null,
-            updated: c.updated
+            updated: c.updated,
+            unread: vis.filter(m => m.from !== user.id && m.time > myRead).length,
+            peerRead: (otherId && c.reads && c.reads[otherId]) || 0,
+            blockedByMe: this._blocked(user.id, otherId)
         };
     }
 
@@ -119,6 +132,69 @@ class DmStore {
         return { ok: true };
     }
 
+    // Отметить диалог прочитанным: собеседник увидит две галочки
+    async markRead(user, convId) {
+        const c = this._get(user, convId);
+        if (!c) return fail('NO_CONVERSATION');
+        const mine = (c.reads && c.reads[user.id]) || 0;
+        const newest = this._visible(user, c).filter(m => m.from !== user.id).reduce((a, m) => Math.max(a, m.time), 0);
+        const otherId = this._otherId(user, c);
+        if (!newest || newest <= mine) return { ok: true, changed: false, time: mine, otherId };
+        const prev = c.reads ? { ...c.reads } : null;
+        c.reads = { ...(c.reads || {}), [user.id]: this.now() };
+        try { await this.file.save(this.data); }
+        catch (e) { c.reads = prev || undefined; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, changed: true, time: c.reads[user.id], otherId };
+    }
+
+    // Чёрный список: заблокированный не может писать, а вы ему — пока не разблокируете
+    async block(user, convId, on) {
+        const c = this._get(user, convId);
+        if (!c) return fail('NO_CONVERSATION');
+        const otherId = this._otherId(user, c);
+        if (!otherId) return fail('NO_CONVERSATION');
+        const prev = this.data.blocks[user.id] ? [...this.data.blocks[user.id]] : null;
+        const list = new Set(prev || []);
+        if (on) { if (!list.has(otherId) && list.size >= BLOCK_CAP) return fail('TOO_MANY_BLOCKS'); list.add(otherId); } else list.delete(otherId);
+        if (list.size) this.data.blocks[user.id] = [...list]; else delete this.data.blocks[user.id];
+        try { await this.file.save(this.data); }
+        catch (e) { if (prev) this.data.blocks[user.id] = prev; else delete this.data.blocks[user.id]; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, blockedByMe: !!on };
+    }
+
+    // Жалоба: модератор увидит последние сообщения диалога
+    async report(user, convId, rawReason, rawText) {
+        const c = this._get(user, convId);
+        if (!c) return fail('NO_CONVERSATION');
+        if (!REPORT_REASONS.includes(rawReason)) return fail('BAD_REASON');
+        const t = normalizeText(typeof rawText === 'string' ? rawText : '', 300);
+        const otherId = this._otherId(user, c);
+        const now = this.now();
+        if (this.data.reports.some(r => r.reporterId === user.id && r.convId === c.id && now - r.time < DAY)) return fail('REPORT_DUPLICATE');
+        const last = c.messages.slice(-10).map(m => ({ from: m.from === user.id ? 'reporter' : 'other', text: m.video ? '[видео]' : (m.voice ? '[голосовое]' : m.text.slice(0, 300)), time: m.time }));
+        const rep = { id: 'rp_' + crypto.randomBytes(6).toString('hex'), time: now, status: 'open', convId: c.id, reporterId: user.id, targetId: otherId, reason: rawReason, text: t.ok ? t.value : '', messages: last };
+        this.data.reports.push(rep);
+        const dropped = [];
+        while (this.data.reports.length > REPORT_CAP) dropped.push(this.data.reports.shift());
+        try { await this.file.save(this.data); }
+        catch (e) { const i = this.data.reports.indexOf(rep); if (i >= 0) this.data.reports.splice(i, 1); this.data.reports.unshift(...dropped); return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, id: rep.id };
+    }
+
+    // Для панели модератора
+    reportsList({ status = 'open', limit = 100 } = {}) {
+        const name = (id) => { const u = id ? this.accounts.byId(id) : null; return u ? u.name : 'удалён'; };
+        return this.data.reports.filter(r => status === 'all' || r.status === status).slice(-limit).reverse()
+            .map(r => ({ id: r.id, time: r.time, status: r.status, reason: r.reason, text: r.text, reporter: name(r.reporterId), target: name(r.targetId), messages: r.messages }));
+    }
+    async closeReport(id) {
+        const r = this.data.reports.find(x => x.id === id);
+        if (!r) return fail('REPORT_NOT_FOUND');
+        const prev = r.status; r.status = 'closed';
+        try { await this.file.save(this.data); } catch (e) { r.status = prev; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true };
+    }
+
     // Возвращает { ok, message, recipients: [id аккаунтов] }
     async send(user, convId, rawText, clientId = null, rawVideo = null, rawVoice = null) {
         const c = this._get(user, convId);
@@ -140,6 +216,9 @@ class DmStore {
         if (!t.value && !video && !voice) return fail('EMPTY_MESSAGE');
         if (clientId !== null && (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId))) return fail('BAD_PAYLOAD');
 
+        const otherId = this._otherId(user, c);
+        if (this._blocked(user.id, otherId)) return fail('BLOCKED_BY_ME');
+        if (this._blocked(otherId, user.id)) return fail('DM_BLOCKED');
         const owner = this.accounts.findByKey(c.ownerKey);
         const recipients = [c.guestId, owner && owner.id].filter(Boolean);
 
