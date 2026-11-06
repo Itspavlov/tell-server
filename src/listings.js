@@ -204,6 +204,11 @@ class ListingStore {
         return { ok: true, listing: this._compose(l, true), quota: this.quota(user.id) };
     }
 
+    // Для подбора: объявления в «сыром» виде и лёгкая карточка для показа
+    raws() { return Object.values(this.data.listings); }
+    rawById(id) { return typeof id === 'string' ? this.data.listings[id] || null : null; }
+    light(l) { return this._compose(l, false); }
+
     // Для модерации: все объявления с владельцами
     listAll() {
         return Object.values(this.data.listings).sort((a, b) => b.created - a.created).slice(0, 500).map(l => ({

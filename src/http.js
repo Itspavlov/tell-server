@@ -331,8 +331,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
 
     // ---------- запросы арендаторов ----------
     const requestFail = (res, r) => res.status(
-        r.code === 'REQUEST_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 : r.code === 'REQUEST_WAIT' ? 429 :
-        r.code === 'STORE_UNAVAILABLE' ? 503 : r.code === 'REQUEST_DUPLICATE' ? 409 : 400
+        (r.code === 'REQUEST_NOT_FOUND' || r.code === 'LISTING_NOT_FOUND') ? 404 : r.code === 'NOT_OWNER' ? 403 : r.code === 'REQUEST_WAIT' ? 429 :
+        r.code === 'STORE_UNAVAILABLE' ? 503 : (r.code === 'REQUEST_DUPLICATE' || r.code === 'REQUEST_CLOSED' || r.code === 'OFFER_DUPLICATE' || r.code === 'OFFER_MISMATCH') ? 409 : 400
     ).json({ ok: false, code: r.code, message: r.message, wait: r.wait });
     const needUser = (req, res) => {
         const user = accounts && accounts.authenticate(bearer(req));
@@ -349,11 +349,10 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const mine = q.mine === '1';
         if (mine && !user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
         const status = ['active', 'found', 'closed', 'expired', 'all'].includes(q.status) ? q.status : 'active';
-        res.json({
-            ok: true,
-            requests: requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine }),
-            cooldown: user ? requests.cooldown(user.id) : 0
-        });
+        const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
+        // у своих активных запросов показываем, сколько вариантов найдено и сколько предложений пришло
+        if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
+        res.json({ ok: true, requests: out, cooldown: user ? requests.cooldown(user.id) : 0 });
     }
 
     async function requestCreate(req, res) {
@@ -364,7 +363,54 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await requests.create(user, req.body);
         if (!r.ok) return requestFail(res, r);
         io.emit('request-changed', { id: r.request.id });
-        res.json({ ok: true, request: r.request, cooldown: r.cooldown });
+        const found = listings ? requests.countMatches(requests.data.requests[r.request.id], listings) : 0;
+        res.json({ ok: true, request: r.request, cooldown: r.cooldown, matches: found });
+    }
+
+    function requestMatches(req, res) {
+        if (!requests || !listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const r = requests.matchesFor(user, req.params.id, listings);
+        if (!r.ok) return requestFail(res, r);
+        res.json({ ok: true, listings: r.listings });
+    }
+
+    function requestsMatching(req, res) {
+        if (!requests || !listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        res.json({ ok: true, requests: requests.matchingFor(user, listings) });
+    }
+
+    async function requestOffer(req, res) {
+        if (!requests || !listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const lid = req.body && typeof req.body.listingId === 'string' ? req.body.listingId : '';
+        const r = await requests.offer(user, req.params.id, lid, listings);
+        if (!r.ok) return requestFail(res, r);
+        const l = listings.rawById(lid);
+        if (notifier) notifier.notify([r.request.ownerId], { kind: 'offer', title: 'Вам предложили жильё', body: user.name + ': ' + trunc((l && l.ad.title) || 'жильё', 80), open: 'profile', tag: 'offer-' + r.request.id });
+        io.emit('request-changed', { id: r.request.id });
+        res.json({ ok: true });
+    }
+
+    function requestOffers(req, res) {
+        if (!requests || !listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const r = requests.offersFor(user, req.params.id, listings);
+        if (!r.ok) return requestFail(res, r);
+        res.json({ ok: true, offers: r.offers });
+    }
+
+    async function requestOfferReject(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await requests.rejectOffer(user, req.params.id, req.params.oid);
+        if (!r.ok) return requestFail(res, r);
+        res.json({ ok: true });
     }
 
     async function requestEdit(req, res) {
@@ -471,7 +517,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, media = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -527,6 +573,11 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);
     app.delete('/api/listings/:id', h.listingDelete);
     app.get('/api/requests', h.requestsList);
+    app.get('/api/requests/matching', h.requestsMatching);
+    app.get('/api/requests/:id/matches', h.requestMatches);
+    app.get('/api/requests/:id/offers', h.requestOffers);
+    app.post('/api/requests/:id/offers', express.json({ limit: '2kb' }), h.requestOffer);
+    app.post('/api/requests/:id/offers/:oid/reject', express.json({ limit: '1kb' }), h.requestOfferReject);
     app.post('/api/requests', express.json({ limit: '8kb' }), h.requestCreate);
     app.post('/api/requests/:id/status', express.json({ limit: '2kb' }), h.requestStatus);
     app.post('/api/requests/:id', express.json({ limit: '8kb' }), h.requestEdit);

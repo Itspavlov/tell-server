@@ -188,3 +188,118 @@ test('объявления: счётчик по полуночи сервиса 
     assert.equal(dayKey(Date.parse('2027-03-10T21:01:00Z'), 'Europe/Moscow'), '2027-03-11');
     await store.close();
 });
+
+// ---------- подбор и предложения ----------
+const { matches } = require('../src/match');
+const LAD = (o = {}) => ({ type: 'rent', category: 'apartment', title: 'Студия у моря', priceNum: 3000, price: '3 000', location: 'Адлер, ул. Ленина', description: 'x', photos: [PNG], thumb: PNG, busy: [], form: { guests: '3' }, ...o });
+async function withListings(clock) {
+    const s = await setup();
+    const owner = await s.reg('Хозяйка', true);
+    const add = async (o) => { const r = await s.listings.save(owner, { ad: LAD(o), profile: {} }); assert.equal(r.ok, true); return r.listing.id; };
+    return { ...s, owner, add };
+}
+
+test('подбор: город, цена, гости, категория, занятые даты', () => {
+    const l = (o) => ({ ad: LAD(o) });
+    const r = (o) => ({ category: 'apartment', city: 'Адлер', dateFrom: '2027-03-15', dateTo: '2027-03-20', guests: 2, budget: 3500, ...o });
+    assert.equal(matches(r(), l()), true);
+    assert.equal(matches(r({ city: 'Сочи' }), l()), false, 'другой город');
+    assert.equal(matches(r({ budget: 2000 }), l()), false, 'дороже бюджета');
+    assert.equal(matches(r({ guests: 5 }), l()), false, 'не вмещает гостей');
+    assert.equal(matches(r({ category: 'house' }), l()), false, 'другая категория');
+    assert.equal(matches(r(), l({ type: 'sale' })), false, 'продажа не подходит');
+    assert.equal(matches(r(), l({ busy: ['2027-03-17'] })), false, 'занято в середине');
+    assert.equal(matches(r(), l({ busy: ['2027-03-20'] })), true, 'день выезда не считается ночью');
+    assert.equal(matches(r(), l({ busy: ['2027-03-15'] })), false, 'занят день заезда');
+    assert.equal(matches(r({ category: '' , city: '', guests: null, budget: null, dateFrom: '', dateTo: '' }), l()), true, 'пустые условия — подходит всё аренда');
+    assert.equal(matches(r({ guests: 2 }), l({ form: {}, facts: [] })), true, 'вместимость неизвестна — не отсеиваем');
+});
+
+test('подбор: автор запроса видит подходящие варианты, чужие — нет', async () => {
+    const { requests, listings, reg, add, store } = await withListings();
+    const a = await reg('Анна'), b = await reg('Борис');
+    const good = await add({ title: 'Подходит' });
+    await add({ title: 'Дорого', priceNum: 9000 });
+    await add({ title: 'Занято', busy: ['2027-03-16'] });
+    const q = (await requests.create(a, REQ({ budget: 3500 }))).request;
+    const m = requests.matchesFor(a, q.id, listings);
+    assert.deepEqual(m.listings.map(x => x.id), [good]);
+    assert.equal(requests.matchesFor(b, q.id, listings).code, 'NOT_OWNER');
+    assert.equal(requests.countMatches(requests.data.requests[q.id], listings), 1);
+    await store.close();
+});
+
+test('подходящие арендаторы: хозяин видит запросы под свои объекты', async () => {
+    const { requests, listings, reg, add, owner, store } = await withListings();
+    const a = await reg('Анна');
+    const lid = await add();
+    await requests.create(a, REQ());
+    const list = requests.matchingFor(owner, listings);
+    assert.equal(list.length, 1);
+    assert.equal(list[0].myMatches[0].id, lid);
+    assert.equal(list[0].myMatches[0].offered, false);
+    assert.equal(requests.matchingFor(a, listings).length, 0, 'у арендатора нет объектов');
+    await store.close();
+});
+
+test('предложение: проходит проверки, не дублируется, арендатор видит и отклоняет', async () => {
+    const { requests, listings, reg, add, owner, clock, store } = await withListings();
+    const a = await reg('Анна'), other = await reg('Другой', true);
+    const good = await add(), busy = await add({ title: 'Занято', busy: ['2027-03-16'] });
+    const q = (await requests.create(a, REQ())).request;
+    assert.equal((await requests.offer(owner, q.id, busy, listings)).code, 'OFFER_MISMATCH', 'нельзя предлагать занятое');
+    assert.equal((await requests.offer(a, q.id, good, listings)).code, 'BAD_REQUEST', 'свой запрос');
+    assert.equal((await requests.offer(other, q.id, good, listings)).code, 'LISTING_NOT_FOUND', 'чужое жильё');
+    const r1 = await requests.offer(owner, q.id, good, listings);
+    assert.equal(r1.ok, true);
+    assert.equal((await requests.offer(owner, q.id, good, listings)).code, 'OFFER_DUPLICATE');
+    const par = await Promise.all([1, 2, 3].map(() => requests.offer(owner, q.id, busy, listings)));   // занятое не проходит и параллельно
+    assert.equal(par.filter(x => x.ok).length, 0);
+    assert.equal(requests.matchingFor(owner, listings)[0].myMatches.find(x => x.id === good).offered, true);
+    const mine = requests.offersFor(a, q.id, listings);
+    assert.equal(mine.offers.length, 1); assert.equal(mine.offers[0].listing.id, good);
+    assert.equal(requests.offersFor(other, q.id, listings).code, 'NOT_OWNER');
+    assert.equal(requests.offerCount(q.id), 1);
+    assert.equal((await requests.rejectOffer(other, q.id, mine.offers[0].id)).code, 'NOT_OWNER');
+    assert.equal((await requests.rejectOffer(a, q.id, mine.offers[0].id)).ok, true);
+    assert.equal(requests.offersFor(a, q.id, listings).offers.length, 0);
+    assert.equal((await requests.offer(owner, q.id, good, listings)).code, 'OFFER_DUPLICATE', 'отклонённое не пересылается повторно');
+    await requests.setStatus(a, q.id, 'found');
+    const g2 = await add({ title: 'Ещё' });
+    assert.equal((await requests.offer(owner, q.id, g2, listings)).code, 'REQUEST_CLOSED');
+    await store.close();
+});
+
+test('предложение: параллельные одинаковые отправки дают одно', async () => {
+    const { requests, listings, reg, add, owner, store } = await withListings();
+    const a = await reg('Анна');
+    const good = await add();
+    const q = (await requests.create(a, REQ())).request;
+    const all = await Promise.all([1, 2, 3, 4].map(() => requests.offer(owner, q.id, good, listings)));
+    assert.equal(all.filter(x => x.ok).length, 1);
+    await store.close();
+});
+
+test('HTTP: найдено вариантов при создании, предложение и уведомление арендатору', async () => {
+    const s = await setup();
+    const notes = [];
+    const notifier = { notify: (ids, p) => notes.push({ ids, p }) };
+    const h = createHandlers({ cfg: s.cfg, store: s.store, admin: createAdmin({ token: '', dataDir: s.cfg.dataDir, logger: silent }), accounts: s.accounts, listings: s.listings, requests: s.requests, limiters: limiters(s.cfg), io: s.io, notifier, logger: silent });
+    const a = await s.accounts.register('Анна', PW), o = await s.accounts.register('Хозяйка', PW); await s.accounts.setVerified(nameKey('Хозяйка'), true);
+    const ho = { authorization: 'Bearer ' + o.token }, ha = { authorization: 'Bearer ' + a.token };
+    let r = res(); await h.listingSave(req({ headers: ho, body: { ad: LAD(), profile: {} } }), r); assert.equal(r.code, 200);
+    const lid = r.body.listing.id;
+    r = res(); await h.requestCreate(req({ headers: ha, body: REQ() }), r); assert.equal(r.body.matches, 1);
+    const rid = r.body.request.id;
+    r = res(); h.requestsList(req({ headers: ha, query: { mine: '1' } }), r); assert.equal(r.body.requests[0].matchCount, 1); assert.equal(r.body.requests[0].offerCount, 0);
+    r = res(); h.requestsMatching(req({ headers: ho }), r); assert.equal(r.body.requests.length, 1);
+    r = res(); await h.requestOffer(req({ headers: ho, params: { id: rid }, body: { listingId: lid } }), r); assert.equal(r.code, 200);
+    assert.equal(notes.length, 1); assert.equal(notes[0].p.kind, 'offer');
+    r = res(); await h.requestOffer(req({ headers: ho, params: { id: rid }, body: { listingId: lid } }), r); assert.equal(r.code, 409);
+    r = res(); h.requestOffers(req({ headers: ha, params: { id: rid } }), r); assert.equal(r.body.offers.length, 1);
+    r = res(); h.requestOffers(req({ headers: ho, params: { id: rid } }), r); assert.equal(r.code, 403);
+    r = res(); h.requestMatches(req({ headers: ha, params: { id: rid } }), r); assert.equal(r.body.listings.length, 1);
+    r = res(); h.requestMatches(req({}), r); assert.equal(r.code, 401);
+    r = res(); h.requestsList(req({ headers: ha, query: { mine: '1' } }), r); assert.equal(r.body.requests[0].offerCount, 1);
+    await s.store.close();
+});
