@@ -54,6 +54,9 @@ function loadConfig(env = process.env) {
         port: intEnv(env, 'PORT', 3000, 1, 65535),
         isProd,
         rooms: ROOMS,
+        // Текстовый чат в общих разделах (жильё, работа, поездки, продам/отдам) выключен: только карточки «Ищу / Предоставляю».
+        // ROOM_CHAT=on возвращает переписку.
+        roomChat: env.ROOM_CHAT === 'on',
         allowedOrigins: Object.freeze([...new Set(origins)]),
         // Запросы без заголовка Origin (curl, тесты). В production по умолчанию запрещены.
         allowNoOrigin: env.ALLOW_NO_ORIGIN === 'true' || (!isProd && env.ALLOW_NO_ORIGIN !== 'false'),

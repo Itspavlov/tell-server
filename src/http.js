@@ -365,7 +365,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const mine = q.mine === '1';
         if (mine && !user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
         const status = ['active', 'found', 'closed', 'expired', 'all'].includes(q.status) ? q.status : 'active';
-        const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
+        const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', section: ['housing', 'work', 'trips', 'market'].includes(q.section) ? q.section : '', kind: ['seek', 'offer'].includes(q.kind) ? q.kind : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
         // у своих активных запросов показываем, сколько вариантов найдено и сколько предложений пришло
         if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
         res.json({ ok: true, requests: out, cooldown: user ? requests.cooldown(user.id) : 0 });

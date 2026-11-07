@@ -111,6 +111,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         socket.on('send-message', async (data, ack) => {
             try {
                 if (!rateOk(ack)) return;
+                if (!cfg.roomChat) return reply(ack, fail('CARDS_ONLY'));
 
                 // Вошедший пользователь пишет под именем своего аккаунта
                 if (account && data && typeof data === 'object' && !Array.isArray(data)) data = { ...data, user: account.name };

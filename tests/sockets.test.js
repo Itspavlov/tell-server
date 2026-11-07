@@ -222,3 +222,14 @@ test('сбой записи: клиент получает STORE_UNAVAILABLE, р
     assert.equal(io.emitted.length, 0);
     await store.close();
 });
+
+test('текстовый чат в разделах выключен без ROOM_CHAT=on: только карточки', async () => {
+    const { connect, store } = await setup({ ROOM_CHAT: 'off' });
+    const a = connect();
+    await join(a);
+    const r = await send(a, data());
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'CARDS_ONLY');
+    assert.equal(store.getHistory('housing', { limit: 10 }).messages.length, 0);
+    await store.close();
+});

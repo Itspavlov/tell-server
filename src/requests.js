@@ -16,6 +16,8 @@ const { normalizeText, fail } = require('./validate');
 const { matches } = require('./match');
 
 const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
+const SECTIONS = ['housing', 'work', 'trips', 'market'];   // раздел, где лежит карточка
+const KINDS = ['seek', 'offer'];                            // «Ищу» / «Предоставляю» (для жилья «Предоставляю» — обычное объявление)
 const STATUSES = ['active', 'found', 'closed'];   // «истёк» вычисляется по времени
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY = 86400000;
@@ -26,8 +28,13 @@ const validDate = (s) => DATE_RE.test(s) && !Number.isNaN(Date.parse(s + 'T00:00
 
 function cleanRequest(raw, today) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('BAD_REQUEST');
-    const category = CATEGORIES.includes(raw.category) ? raw.category : '';
-    const city = text(raw.city, 60), district = text(raw.district, 60), note = text(raw.text, 300);
+    const section = SECTIONS.includes(raw.section) ? raw.section : 'housing';
+    const housing = section === 'housing';
+    // у жилья «Предоставляю» — это объявление, а не запрос
+    const kind = housing ? 'seek' : (KINDS.includes(raw.kind) ? raw.kind : 'seek');
+    const category = housing && CATEGORIES.includes(raw.category) ? raw.category : '';
+    const city = text(raw.city, 60), district = housing ? text(raw.district, 60) : '', note = text(raw.text, 300);
+    const title = housing ? '' : text(raw.title, 80);
     const from = typeof raw.dateFrom === 'string' && raw.dateFrom ? raw.dateFrom : '';
     const to = typeof raw.dateTo === 'string' && raw.dateTo ? raw.dateTo : '';
     if ((from && !validDate(from)) || (to && !validDate(to))) return fail('BAD_REQUEST');
@@ -37,11 +44,12 @@ function cleanRequest(raw, today) {
     if (raw.guests !== undefined && raw.guests !== '' && raw.guests !== null && num(raw.guests, 1, 30) === null) return fail('BAD_REQUEST');
     if (raw.budget !== undefined && raw.budget !== '' && raw.budget !== null && num(raw.budget, 1, 10_000_000) === null) return fail('BAD_REQUEST');
     const guests = num(raw.guests, 1, 30), budget = num(raw.budget, 1, 10_000_000);
-    if (!city && !note && !category) return fail('BAD_REQUEST');   // совсем пустой запрос не нужен
-    return { ok: true, value: { category, city, district, dateFrom: from, dateTo: to, guests, budget, text: note } };
+    if (housing && !city && !note && !category) return fail('BAD_REQUEST');   // совсем пустой запрос не нужен
+    if (!housing && !title) return fail('BAD_REQUEST');                       // у остальных разделов нужен заголовок
+    return { ok: true, value: { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget, text: note } };
 }
 
-const sig = (v) => crypto.createHash('sha1').update([v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
+const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
 
 class RequestStore {
     constructor({ dataDir, limits, now = Date.now, logger = console, fsImpl, dayOf }) {
@@ -64,7 +72,7 @@ class RequestStore {
         return {
             id: r.id, ownerId: r.ownerId, ownerName: r.ownerName, created: r.created, updated: r.updated,
             expires: r.created + this._ttl(), status: this._status(r), mine: viewerId === r.ownerId,
-            category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
+            section: r.section || 'housing', kind: r.kind || 'seek', title: r.title || '', category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
             guests: r.guests, budget: r.budget, text: r.text, notify: r.notify !== false
         };
     }
@@ -76,12 +84,14 @@ class RequestStore {
         return Math.max(0, Math.ceil((last + cd - this.now()) / 1000));
     }
 
-    list({ viewerId = null, status = 'active', category = '', city = '', mine = false, limit = 100 } = {}) {
+    list({ viewerId = null, status = 'active', category = '', city = '', mine = false, limit = 100, section = '', kind = '' } = {}) {
         const c = String(city || '').trim().toLowerCase();
         return Object.values(this.data.requests)
             .filter(r => !mine || r.ownerId === viewerId)
             .filter(r => status === 'all' || this._status(r) === status)
             .filter(r => !category || r.category === category)
+            .filter(r => !section || (r.section || 'housing') === section)
+            .filter(r => !kind || (r.kind || 'seek') === kind)
             .filter(r => !c || (r.city || '').toLowerCase().includes(c))
             .sort((a, b) => b.created - a.created)       // порядок задаёт время создания; правки не поднимают
             .slice(0, Math.min(200, limit))
@@ -123,7 +133,7 @@ class RequestStore {
         if (!r) return fail('REQUEST_NOT_FOUND');
         if (r.ownerId !== user.id) return fail('NOT_OWNER');
         if (this._status(r) !== 'active') return fail('BAD_REQUEST');
-        const c = cleanRequest(raw, this.dayOf(this.now()));
+        const c = cleanRequest(raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw, section: r.section || 'housing', kind: r.kind || 'seek' } : raw, this.dayOf(this.now()));
         if (!c.ok) return c;
         const s = sig(c.value);
         const dup = Object.values(this.data.requests).some(x => x.id !== id && x.ownerId === user.id && this._status(x) === 'active' && x.sig === s);

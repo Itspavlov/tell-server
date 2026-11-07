@@ -15,7 +15,7 @@ const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPh
 const PNG = 'data:image/png;base64,' + PNG_B64;
 
 function makeCfg(over = {}) {
-    return loadConfig({ NODE_ENV: 'production', DATA_DIR: over.dataDir || tmpDir(), ALLOW_NO_ORIGIN: 'true', ...over.env });
+    return loadConfig({ NODE_ENV: 'production', DATA_DIR: over.dataDir || tmpDir(), ALLOW_NO_ORIGIN: 'true', ROOM_CHAT: 'on', ...over.env });
 }
 
 async function makeStore(cfg, extra = {}) {

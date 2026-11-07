@@ -396,3 +396,37 @@ test('запрос: владелец удаляет его вместе с пр�
     r = res(); await h.requestDelete(req({ headers: { authorization: 'Bearer ' + a.token }, params: { id: q.id } }), r);
     assert.equal(r.code, 404);
 });
+
+test('карточки других разделов: заголовок обязателен, раздел и вид сохраняются, к жилью не подбираются', async () => {
+    const { requests, listings, reg, clock, store } = await setup();
+    const a = await reg('Анна'), b = await reg('Борис', true);
+    assert.equal((await requests.create(a, { section: 'work', kind: 'seek', city: 'Сочи' })).code, 'BAD_REQUEST');   // нет заголовка
+    const r = await requests.create(a, { section: 'work', kind: 'offer', title: 'Нужен официант', city: 'Сочи', budget: 2000, category: 'apartment' });
+    assert.equal(r.ok, true);
+    assert.equal(r.request.section, 'work'); assert.equal(r.request.kind, 'offer'); assert.equal(r.request.title, 'Нужен официант');
+    assert.equal(r.request.category, '');                                   // категория жилья здесь не нужна
+    clock.t += 61000;
+    const t = await requests.create(a, { section: 'trips', kind: 'seek', title: 'Ищу попутчиков в Адлер', dateFrom: '2027-03-15', guests: 2 });
+    assert.equal(t.ok, true);
+    clock.t += 61000;
+    const h = await requests.create(a, REQ());                              // жильё по умолчанию
+    assert.equal(h.request.section, 'housing'); assert.equal(h.request.kind, 'seek');
+    assert.equal(requests.list({ viewerId: b.id, section: 'work' }).length, 1);
+    assert.equal(requests.list({ viewerId: b.id, section: 'housing' }).length, 1);
+    assert.equal(requests.list({ viewerId: b.id, kind: 'offer' }).length, 1);
+    assert.equal(requests.list({ viewerId: b.id }).length, 3);
+    // у жилья «Предоставляю» — это объявление: запрос такого вида превращается в обычный «Ищу»
+    clock.t += 61000;
+    assert.equal((await requests.create(a, REQ({ city: 'Сочи', kind: 'offer' }))).request.kind, 'seek');
+    // карточка работы не должна «подходить» под объявления
+    const lr = await listings.save(b, { ad: AD(1), profile: {} });
+    assert.equal(lr.ok, true);
+    assert.equal(requests.countMatches(requests.data.requests[r.request.id], listings), 0);
+    const hit = await requests.matchesNotify(listings.rawById(lr.listing.id));
+    assert.ok(!hit.some(x => x.requests.includes(r.request.id) || x.requests.includes(t.request.id)));
+    assert.equal(requests.matchesFor(a, r.request.id, listings).listings.length, 0);
+    // правка не меняет раздел и вид
+    const e = await requests.edit(a, r.request.id, { section: 'market', kind: 'seek', title: 'Нужен повар', city: 'Сочи' });
+    assert.equal(e.ok, true); assert.equal(e.request.section, 'work'); assert.equal(e.request.kind, 'offer'); assert.equal(e.request.title, 'Нужен повар');
+    await store.close();
+});

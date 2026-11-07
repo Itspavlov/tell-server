@@ -34,6 +34,8 @@ const norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').trim();
 
 // l — объявление в том виде, как оно хранится в ListingStore
 function matches(req, l) {
+    // карточки «Ищу/Предоставляю» других разделов к жилью не подбираются
+    if (req && req.section && req.section !== 'housing') return false;
     const a = l && l.ad;
     if (!a || a.type !== 'rent') return false;
     if (req.category && (a.category || 'apartment') !== req.category) return false;
