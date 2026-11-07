@@ -110,6 +110,7 @@ function loadConfig(env = process.env) {
             listingSave: { windowMs: 3_600_000, max: 40 },
             requestWrite: { windowMs: 60_000, max: 20 },
             reviewWrite: { windowMs: 3_600_000, max: 20 },
+            serviceWrite: { windowMs: 3_600_000, max: 30 },
             verifyRequest: { windowMs: 3_600_000, max: 5 },
             pushSub: { windowMs: 3_600_000, max: 30 },
             mediaUpload: { windowMs: 3_600_000, max: 30 }

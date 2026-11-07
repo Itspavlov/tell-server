@@ -215,6 +215,20 @@ class ListingStore {
         return { ok: true, listing: this._compose(l, true), quota: this.quota(user.id), created: isNew };
     }
 
+    // «Опубликовать заново»: объявление встаёт наверх ленты без правок и без расхода дневного лимита
+    async bump(user, id) {
+        const l = typeof id === 'string' ? this.data.listings[id] : null;
+        if (!l) return fail('LISTING_NOT_FOUND');
+        if (l.ownerId !== user.id) return fail('NOT_OWNER');
+        const t = this.now(), wait = 6 * 3600 * 1000;
+        if (l.bumpedAt && t - l.bumpedAt < wait) return fail('BUMP_WAIT', { wait: Math.ceil((wait - (t - l.bumpedAt)) / 1000) });
+        const prev = { updated: l.updated, bumpedAt: l.bumpedAt };
+        l.updated = t; l.bumpedAt = t;
+        try { await this.file.save(this.data); }
+        catch (e) { l.updated = prev.updated; if (prev.bumpedAt === undefined) delete l.bumpedAt; else l.bumpedAt = prev.bumpedAt; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, listing: this._compose(l, false) };
+    }
+
     // Для подбора: объявления в «сыром» виде и лёгкая карточка для показа
     raws() { return Object.values(this.data.listings); }
     rawById(id) { return typeof id === 'string' ? this.data.listings[id] || null : null; }

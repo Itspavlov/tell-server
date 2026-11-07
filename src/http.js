@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, searches = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -161,6 +161,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
                 listings && listings.renameOwner(u.id, name),
                 requests && requests.renameOwner(u.id, name),
                 reviews && reviews.renameAuthor(u.id, name),
+                services && services.renameOwner(u.id, name),
                 store && store.renameUser(r.oldName, name)
             ].filter(Boolean));
             // открытые сессии этого человека получают новое имя сразу
@@ -367,8 +368,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
     // ---------- объявления ----------
     const listingFail = (res, r) => res.status(
         r.code === 'LISTING_NOT_FOUND' ? 404 : (r.code === 'NOT_OWNER' || r.code === 'NOT_VERIFIED') ? 403 :
-        (r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL') ? 503 : r.code === 'DAILY_LIMIT' ? 429 : 400
-    ).json({ ok: false, code: r.code, message: r.message, quota: r.quota });
+        (r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL') ? 503 : (r.code === 'DAILY_LIMIT' || r.code === 'BUMP_WAIT') ? 429 : 400
+    ).json({ ok: false, code: r.code, message: r.message, quota: r.quota, ...(r.wait ? { wait: r.wait } : {}) });
 
     // ---------- запросы арендаторов ----------
     const requestFail = (res, r) => res.status(
@@ -741,7 +742,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({
             ok: true, isMe: !!(viewer && viewer.id === u.id),
             user: { id: u.id, name: u.name, verified: !!u.verified, since: full && full.createdAt ? new Date(full.createdAt).getFullYear() : null, avatar: raws[0] ? raws[0].owner.avatar : '', about: raws[0] ? raws[0].owner.about : '' },
-            listings: raws.map(l => listings.light(l)), rating: rv.rating, count: rv.count, reviews: rv.items
+            listings: raws.map(l => listings.light(l)), services: services ? services.list({ ownerId: u.id }) : [], rating: rv.rating, count: rv.count, reviews: rv.items
         });
     }
 
@@ -757,6 +758,88 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await reviews.remove(null, req.params.id, { admin: true });
         if (!r.ok) return reviewFail(res, r);
         await admin.audit('delete_review', { id: trunc(req.params.id, 40), author: trunc(r.review.authorName, 40), ip: ipOf(req) });
+        res.json({ ok: true });
+    }
+
+    // ---------- услуги в профиле ----------
+    const serviceFail = (res, r) => res.status(
+        r.code === 'SERVICE_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 : r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL' ? 503 :
+        r.code === 'BUMP_WAIT' ? 429 : 400
+    ).json({ ok: false, code: r.code, message: r.message, ...(r.wait ? { wait: r.wait } : {}) });
+
+    function servicesList(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const q = req.query || {};
+        const mine = q.mine === '1' || q.mine === 'true';
+        let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
+        if (mine) { const u = accounts && accounts.authenticate(bearer(req)); if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = u.id; }
+        res.json({ ok: true, services: services.list({ ownerId }) });
+    }
+
+    function serviceGet(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const s = services.get(req.params.id);
+        if (!s) return serviceFail(res, { code: 'SERVICE_NOT_FOUND', message: 'Карточка не найдена' });
+        res.json({ ok: true, service: s });
+    }
+
+    async function serviceSave(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.serviceWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await services.save(user, req.body);
+        if (!r.ok) return serviceFail(res, r);
+        res.json({ ok: true, service: r.service, created: r.created });
+    }
+
+    async function serviceBump(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.serviceWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await services.bump(user, req.params.id);
+        if (!r.ok) return serviceFail(res, r);
+        res.json({ ok: true, service: r.service });
+    }
+
+    async function serviceDelete(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.serviceWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await services.remove(user, req.params.id);
+        if (!r.ok) return serviceFail(res, r);
+        res.json({ ok: true });
+    }
+
+    async function listingBump(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.listingSave.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await listings.bump(user, req.params.id);
+        if (!r.ok) return listingFail(res, r);
+        io.emit('listing-changed', { id: r.listing.id });
+        res.json({ ok: true, listing: r.listing });
+    }
+
+    async function adminServices(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_services', {}))) return;
+        res.json({ ok: true, services: services.listAll() });
+    }
+
+    async function adminServiceDelete(req, res) {
+        if (!services) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'delete_service', { id: trunc(req.params.id, 40) }))) return;
+        const r = await services.remove(null, req.params.id, { admin: true });
+        if (!r.ok) return serviceFail(res, r);
+        await admin.audit('delete_service', { id: trunc(req.params.id, 40), owner: trunc(r.service.ownerName, 40), title: trunc(r.service.title, 60), ip: ipOf(req) });
         res.json({ ok: true });
     }
 
@@ -794,15 +877,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, searches = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, stats, searches, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, stats, searches, media, dms, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -834,6 +917,8 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.delete('/api/admin/listings/:id', h.adminDeleteListing);
     app.get('/api/admin/reviews', h.adminReviews);
     app.delete('/api/admin/reviews/:id', h.adminReviewDelete);
+    app.get('/api/admin/services', h.adminServices);
+    app.delete('/api/admin/services/:id', h.adminServiceDelete);
     app.get('/api/admin/audit', h.adminAudit);
     app.get('/api/admin/reports', h.adminReports);
     app.post('/api/admin/reports/:id/close', h.adminReportClose);
@@ -862,6 +947,12 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/reviews/:id/reply', express.json({ limit: '2kb' }), h.reviewReply);
     app.delete('/api/reviews/:id', h.reviewDelete);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);
+    app.post('/api/listings/:id/bump', express.json({ limit: '1kb' }), h.listingBump);
+    app.get('/api/services', h.servicesList);
+    app.get('/api/services/:id', h.serviceGet);
+    app.post('/api/services', express.json({ limit: '3mb' }), h.serviceSave);
+    app.post('/api/services/:id/bump', express.json({ limit: '1kb' }), h.serviceBump);
+    app.delete('/api/services/:id', h.serviceDelete);
     app.delete('/api/listings/:id', h.listingDelete);
     app.get('/api/notifications', h.inboxList);
     app.post('/api/notifications/read', express.json({ limit: '4kb' }), h.inboxRead);
