@@ -67,7 +67,7 @@
     function renderShell() {
         const body = el('div', { id: 'body' });
         const tabs = el('div', { class: 'tabs' });
-        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['reviews', 'Отзывы'], ['services', 'Услуги'], ['audit', 'Журнал']];
+        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['reviews', 'Отзывы'], ['services', 'Развлечения'], ['audit', 'Журнал']];
         for (const [id, label] of defs) {
             tabs.append(el('button', { class: 'tab' + (tab === id ? ' on' : ''), onclick: () => { tab = id; stopAuto(); renderShell(); } },
                 label, (id === 'requests' && counts.requests) || (id === 'reports' && counts.reports) ? el('span', { class: 'badge' }, id === 'reports' ? counts.reports : counts.requests) : null));
@@ -202,16 +202,16 @@
                     el('button', { class: 'btn bad', onclick: () => confirm('Удалить отзыв?') && act(() => api('DELETE', '/reviews/' + encodeURIComponent(r.id)), 'Отзыв удалён', true) }, 'Удалить'))))));
     }
 
-    // ---------- Услуги ----------
+    // ---------- Развлечения ----------
     async function vServices(body) {
         const d = await api('GET', '/services');
-        if (!d.services.length) { body.replaceChildren(el('p', { class: 'mut' }, 'Карточек услуг пока нет')); return; }
+        if (!d.services.length) { body.replaceChildren(el('p', { class: 'mut' }, 'Карточек развлечений пока нет')); return; }
         body.replaceChildren(...d.services.map(x => el('div', { class: 'card' },
             el('div', { class: 'row' },
                 el('div', { style: 'min-width:0;flex:1' },
                     el('b', {}, x.title), el('span', { class: 'pill' }, x.price ? x.price + ' ₽' : 'без цены'), el('span', { class: 'mut' }, '  ' + x.ownerName + ' · ' + (x.city || '') + ' · фото: ' + x.photos + ' · ' + fmt(x.created))),
                 el('div', { class: 'actions' },
-                    el('button', { class: 'btn bad', onclick: () => confirm('Удалить карточку услуги?') && act(() => api('DELETE', '/services/' + encodeURIComponent(x.id)), 'Карточка удалена', true) }, 'Удалить'))))));
+                    el('button', { class: 'btn bad', onclick: () => confirm('Удалить карточку развлечения?') && act(() => api('DELETE', '/services/' + encodeURIComponent(x.id)), 'Карточка удалена', true) }, 'Удалить'))))));
     }
 
     // ---------- Журнал ----------

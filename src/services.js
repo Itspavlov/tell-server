@@ -1,8 +1,8 @@
 'use strict';
 // ============================================
-// Карточки услуг в профиле: «прогулки на джипах», «трансфер», «маникюр на дому».
+// Карточки развлечений в профиле: «морские прогулки», «экскурсии», «прогулки на джипах».
 //  • карточку создаёт вошедший пользователь, у неё до 4 фото, цена и описание;
-//  • её видят все: в профиле автора и в разделе «Услуги»;
+//  • её видят все: в профиле автора и в разделе «Развлечения»;
 //  • менять, поднимать и удалять может автор, удалить любую — модератор;
 //  • поднять (опубликовать заново) можно раз в 6 часов: карточка встаёт наверх ленты.
 // Фото хранятся в services.json как у объявлений (проверка по содержимому, лимиты размера).
@@ -15,8 +15,8 @@ const { normalizeText, validateImage, fail } = require('./validate');
 const MAX_PER_USER = 10, MAX_PHOTOS = 4, PHOTO_BYTES = 350_000, THUMB_BYTES = 60_000;
 const MAX_BYTES = 80 * 1048576;                       // общий потолок services.json
 const BUMP_COOLDOWN_MS = 6 * 3600 * 1000;
-const TAGS = ['tours', 'transport', 'beauty', 'repair', 'food', 'kids', 'other'];
-const UNITS = ['', 'за человека', 'за час', 'за день', 'за услугу'];
+const TAGS = ['sea', 'tours', 'active', 'kids', 'show', 'food', 'other'];   // морские прогулки, экскурсии, активный отдых, детям, шоу и вечера, еда
+const UNITS = ['', 'за человека', 'за час', 'за день', 'за билет', 'за лодку / группу'];
 
 const num = (v, min, max) => {
     if (v === undefined || v === null || v === '') return null;
@@ -60,7 +60,7 @@ class ServiceStore {
         const d = await this.file.load({});
         this.data = { items: d.items || {} };
         this.bytes = JSON.stringify(this.data).length;
-        this.logger.info?.(`Услуги: ${Object.keys(this.data.items).length}, ${(this.bytes / 1048576).toFixed(1)} МБ`);
+        this.logger.info?.(`Развлечения: ${Object.keys(this.data.items).length}, ${(this.bytes / 1048576).toFixed(1)} МБ`);
     }
 
     _view(s, full) {

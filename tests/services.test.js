@@ -102,3 +102,12 @@ test('профиль человека отдаёт его услуги, смен
     assert.equal((await services.remove(null, s.id, { admin: true })).ok, true);
     await store.close();
 });
+
+test('развлечения: категории «морские прогулки», «экскурсии»; прежние «услуги» заменяются на «другое»', async () => {
+    const { services, reg, store } = await setup();
+    const a = await reg('Борис');
+    for (const t of ['sea', 'tours', 'active', 'kids', 'show', 'food']) assert.equal((await services.save(a, SV({ tag: t, title: 'К ' + t }))).service.tag, t);
+    assert.equal((await services.save(a, SV({ tag: 'repair' }))).service.tag, 'other');
+    assert.equal((await services.save(a, SV({ unit: 'за билет' }))).service.unit, 'за билет');
+    await store.close();
+});
