@@ -133,3 +133,21 @@ test('публичный профиль: по id и по имени, объяв�
     const mine = res(); env.h.userProfile(rq(g.token, { query: { id: env.host.user.id } }), mine);
     assert.equal(mine.body.reviews[0].mine, true);
 });
+
+test('кабинет хозяина: просмотры (без своих), избранное, диалоги, отзывы', async () => {
+    const { StatsStore } = require('../src/stats');
+    const env = await setup(); const g = await env.reg('Гость'); await contact(env, g);
+    await post(env, g.token, { rating: 4, text: '' });
+    const stats = new StatsStore({ dataDir: env.cfg.dataDir, logger: silent }); await stats.init();
+    const fav = { countFor: () => 3 };
+    const h = createHandlers({ cfg: env.cfg, store: await makeStore(env.cfg), admin: createAdmin({ token: '', dataDir: env.cfg.dataDir, logger: silent }), accounts: env.accounts, listings: env.listings, reviews: env.reviews, stats, favorites: fav, dms: env.dms, limiters: limiters(env.cfg), io: makeIo(), logger: silent });
+    const get = (t, id) => { const r = res(); h.listingGet(rq(t, { params: { id } }), r); return r; };
+    get(g.token, env.lid); get(g.token, env.lid); get(null, env.lid); get(env.host.token, env.lid);
+    const r = res(); h.myStats(rq(env.host.token), r);
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    const it = r.body.listings[0];
+    assert.equal(it.views, 2); assert.equal(it.favorites, 3); assert.equal(it.reviews, 1); assert.equal(it.rating, 4);
+    assert.equal(r.body.totals.views7, 2); assert.equal(r.body.totals.chats >= 0, true); assert.equal(it.series.length, 7);
+    const no = res(); h.myStats(rq(null), no); assert.equal(no.code, 401);
+    const other = await env.reg('Чужой'); const o = res(); h.myStats(rq(other.token), o); assert.deepEqual(o.body.listings, []);
+});

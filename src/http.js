@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -534,6 +534,10 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!r.ok) return limited(res, r);
         const l = listings.get(req.params.id);
         if (!l) return res.status(404).json({ ok: false, code: 'LISTING_NOT_FOUND' });
+        if (stats) {
+            const viewer = accounts && accounts.authenticate(bearer(req));
+            if (!viewer || viewer.id !== l.ownerId) stats.view(l.id, viewer ? viewer.id : 'ip:' + ipOf(req));
+        }
         res.json({ ok: true, listing: l });
     }
 
@@ -578,6 +582,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await listings.remove(user, req.params.id);
         if (!r.ok) return listingFail(res, r);
         if (reviews) await reviews.dropListing(req.params.id);
+        if (stats) stats.drop(req.params.id);
         io.emit('listing-changed', { id: req.params.id, removed: true });
         res.json({ ok: true });
     }
@@ -631,6 +636,32 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rv = r.review;
         if (notifier) notifier.notify([rv.authorId], { kind: 'review', title: 'Хозяин ответил на ваш отзыв', body: trunc(r.review.reply.text, 100), open: 'listing:' + rv.listingId, tag: 'review-reply:' + rv.id });
         res.json({ ok: true, reply: rv.reply });
+    }
+
+    // Кабинет хозяина: просмотры, избранное, диалоги, отзывы по каждому объявлению
+    function myStats(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.history.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const mine = listings.raws().filter(l => l.ownerId === user.id).sort((a, b) => b.updated - a.updated);
+        const chatsBy = {}; let chatsAll = 0, chatsWeek = 0;
+        if (dms) for (const c of Object.values(dms.data.convs)) {
+            if (c.ownerKey !== user.key || !c.messages.length) continue;
+            chatsAll++; if (c.created > Date.now() - 7 * 86400_000) chatsWeek++;
+            if (c.adId) chatsBy[c.adId] = (chatsBy[c.adId] || 0) + 1;
+        }
+        let offers = 0;
+        if (requests) for (const o of Object.values(requests.data.offers)) if (o.ownerId === user.id) offers++;
+        const items = mine.map(l => {
+            const s = stats ? stats.summary(l.id) : { total: 0, week: 0, series: [0, 0, 0, 0, 0, 0, 0] };
+            const rs = reviews ? reviews.listingStats(l.id) : { rating: null, count: 0 };
+            return { id: l.id, title: l.ad.title, price: l.ad.price, thumb: l.ad.thumb || '', views: s.total, views7: s.week, series: s.series,
+                favorites: favorites ? favorites.countFor(l.id) : 0, chats: chatsBy[l.id] || 0, rating: rs.rating, reviews: rs.count };
+        });
+        const sum = (k) => items.reduce((a, i) => a + i[k], 0);
+        const series = [0, 0, 0, 0, 0, 0, 0]; for (const i of items) i.series.forEach((v, n) => { series[n] += v; });
+        res.json({ ok: true, totals: { views: sum('views'), views7: sum('views7'), favorites: sum('favorites'), chats: chatsAll, chatsWeek, offers, series }, listings: items });
     }
 
     // Публичный профиль человека: по id или по имени (в общих чатах известно только имя)
@@ -701,15 +732,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, myStats, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, stats, media, dms, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -756,6 +787,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/push/unsubscribe', h.pushUnsubscribe);
     app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg'], limit: '7mb' }), h.mediaUpload);
     app.get('/api/profile', h.userProfile);
+    app.get('/api/my/stats', h.myStats);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/quota', h.listingQuota);
     app.get('/api/listings/:id', h.listingGet);

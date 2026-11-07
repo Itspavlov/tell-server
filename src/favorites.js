@@ -36,6 +36,9 @@ class FavoriteStore {
         return { ok: true, ids: this.ids(userId) };
     }
 
+    // Сколько человек добавили объявление в избранное
+    countFor(listingId) { let n = 0; for (const l of Object.values(this.data.users)) if (l.includes(listingId)) n++; return n; }
+
     // Карточки избранного; удалённые объявления отбрасываются
     list(userId, listings) {
         return this.ids(userId).map(id => listings.rawById(id)).filter(Boolean).map(l => listings.light(l));
