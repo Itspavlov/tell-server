@@ -426,7 +426,7 @@ test('карточки других разделов: заголовок обя�
     assert.ok(!hit.some(x => x.requests.includes(r.request.id) || x.requests.includes(t.request.id)));
     assert.equal(requests.matchesFor(a, r.request.id, listings).listings.length, 0);
     // правка не меняет раздел и вид
-    const e = await requests.edit(a, r.request.id, { section: 'market', kind: 'seek', title: 'Нужен повар', city: 'Сочи' });
+    const e = await requests.edit(a, r.request.id, { section: 'services', kind: 'seek', title: 'Нужен повар', city: 'Сочи' });
     assert.equal(e.ok, true); assert.equal(e.request.section, 'work'); assert.equal(e.request.kind, 'offer'); assert.equal(e.request.title, 'Нужен повар');
     await store.close();
 });

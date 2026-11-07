@@ -103,6 +103,21 @@ class DmStore {
         return { ok: true, conv: this._summary(user, c), created };
     }
 
+    // Хозяин сменил имя: диалоги привязаны к ключу его имени, переносим их на новый
+    async renameOwner(oldKey, newKey, newName) {
+        if (!oldKey || !newKey) return 0;
+        let n = 0;
+        for (const c of Object.values(this.data.convs)) {
+            if (c.ownerKey !== oldKey) continue;
+            this.pair.delete(c.guestId + '|' + c.ownerKey);
+            c.ownerKey = newKey; c.ownerName = newName;
+            this.pair.set(c.guestId + '|' + newKey, c.id);
+            n++;
+        }
+        if (n) { try { await this.file.save(this.data); } catch (e) { this.logger.error?.(`dm rename: ${e.code || e.message}`); } }
+        return n;
+    }
+
     // Писал ли пользователь хозяину (по ключу имени) хотя бы одно сообщение
     hasWritten(userId, ownerKey) {
         const c = this.data.convs[this.pair.get(userId + '|' + ownerKey)];

@@ -16,7 +16,7 @@ const { normalizeText, fail } = require('./validate');
 const { matches } = require('./match');
 
 const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
-const SECTIONS = ['housing', 'work', 'trips', 'market'];   // раздел, где лежит карточка
+const SECTIONS = ['housing', 'work', 'trips', 'services'];   // раздел, где лежит карточка
 const KINDS = ['seek', 'offer'];                            // «Ищу» / «Предоставляю» (для жилья «Предоставляю» — обычное объявление)
 const STATUSES = ['active', 'found', 'closed'];   // «истёк» вычисляется по времени
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -57,6 +57,14 @@ class RequestStore {
         this.limits = limits; this.now = now; this.logger = logger;
         this.dayOf = dayOf || ((ts) => new Date(ts).toISOString().slice(0, 10));
         this.data = { requests: {}, lastPost: {}, offers: {} };
+    }
+
+    async renameOwner(userId, name) {
+        let n = 0;
+        for (const r of Object.values(this.data.requests)) if (r.ownerId === userId && r.ownerName !== name) { r.ownerName = name; n++; }
+        for (const o of Object.values(this.data.offers || {})) if (o.ownerId === userId && o.ownerName !== name) { o.ownerName = name; n++; }
+        if (n) { try { await this.file.save(this.data); } catch (e) { this.logger.error?.(`requests rename: ${e.code || e.message}`); } }
+        return n;
     }
 
     async init() {

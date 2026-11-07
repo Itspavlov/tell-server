@@ -231,5 +231,10 @@ test('текстовый чат в разделах выключен без ROOM
     assert.equal(r.ok, false);
     assert.equal(r.code, 'CARDS_ONLY');
     assert.equal(store.getHistory('housing', { limit: 10 }).messages.length, 0);
+    // «Знакомства и общение» — обычный чат, он остаётся
+    await join(a, 'dating');
+    const d = await send(a, data({ room: 'dating', text: 'всем привет' }));
+    assert.equal(d.ok, true);
+    assert.equal(store.getHistory('dating', { limit: 10 }).messages.length, 1);
     await store.close();
 });

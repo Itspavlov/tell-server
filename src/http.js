@@ -144,6 +144,31 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true });
     }
 
+    // Смена имени: имя — это и логин, и подпись везде, поэтому копии имени в чужих данных обновляем сразу
+    async function rename(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.loginIp.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await accounts.rename(u.id, b.name);
+        if (!r.ok) return res.status(r.code === 'SERVER_ERROR' ? 503 : (r.code === 'NAME_TAKEN' ? 409 : (r.code === 'RENAME_WAIT' ? 429 : 400))).json({ ok: false, code: r.code, message: r.message, ...(r.wait ? { wait: r.wait } : {}) });
+        if (r.changed) {
+            const name = r.user.name;
+            await Promise.all([
+                dms && dms.renameOwner(r.oldKey, nameKey(name), name),
+                listings && listings.renameOwner(u.id, name),
+                requests && requests.renameOwner(u.id, name),
+                reviews && reviews.renameAuthor(u.id, name),
+                store && store.renameUser(r.oldName, name)
+            ].filter(Boolean));
+            // открытые сессии этого человека получают новое имя сразу
+            if (io) io.to('user:' + u.id).emit('account-renamed', { id: u.id, name });
+        }
+        res.json({ ok: true, user: r.user });
+    }
+
     function me(req, res) {
         if (!accounts) return res.status(404).json({ error: 'Not found' });
         const u = accounts.authenticate(bearer(req));
@@ -365,7 +390,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const mine = q.mine === '1';
         if (mine && !user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
         const status = ['active', 'found', 'closed', 'expired', 'all'].includes(q.status) ? q.status : 'active';
-        const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', section: ['housing', 'work', 'trips', 'market'].includes(q.section) ? q.section : '', kind: ['seek', 'offer'].includes(q.kind) ? q.kind : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
+        const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', section: ['housing', 'work', 'trips', 'services'].includes(q.section) ? q.section : '', kind: ['seek', 'offer'].includes(q.kind) ? q.kind : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
         // у своих активных запросов показываем, сколько вариантов найдено и сколько предложений пришло
         if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
         res.json({ ok: true, requests: out, cooldown: user ? requests.cooldown(user.id) : 0 });
@@ -769,7 +794,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, searches = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -816,6 +841,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/auth/register', h.register);
     app.post('/api/auth/login', h.login);
     app.post('/api/auth/logout', h.logout);
+    app.post('/api/auth/rename', h.rename);
     app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
     app.get('/api/push/key', h.pushKey);

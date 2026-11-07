@@ -9,7 +9,7 @@ const path = require('path');
 // Единственные комнаты, в которые можно писать (как и раньше)
 // housing — общий чат жилья, housing-* — чаты по типам жилья
 const HOUSING_CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
-const ROOMS = ['housing', ...HOUSING_CATEGORIES.map(c => 'housing-' + c), 'work', 'market', 'trips'];
+const ROOMS = ['housing', ...HOUSING_CATEGORIES.map(c => 'housing-' + c), 'work', 'market', 'services', 'dating', 'trips'];   // market — прежний раздел, оставлен ради старой истории
 
 const DEFAULT_ORIGIN = 'https://gokurort-new.onrender.com';
 const DEV_ORIGINS = [
@@ -57,6 +57,7 @@ function loadConfig(env = process.env) {
         // Текстовый чат в общих разделах (жильё, работа, поездки, продам/отдам) выключен: только карточки «Ищу / Предоставляю».
         // ROOM_CHAT=on возвращает переписку.
         roomChat: env.ROOM_CHAT === 'on',
+        chatRooms: ['dating'],              // комнаты, где переписка остаётся всегда
         allowedOrigins: Object.freeze([...new Set(origins)]),
         // Запросы без заголовка Origin (curl, тесты). В production по умолчанию запрещены.
         allowNoOrigin: env.ALLOW_NO_ORIGIN === 'true' || (!isProd && env.ALLOW_NO_ORIGIN !== 'false'),

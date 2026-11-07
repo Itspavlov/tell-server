@@ -297,3 +297,38 @@ test('dm-delete: без входа нельзя', async () => {
     const g = connect(null);
     assert.equal((await call(g, 'dm-delete', { convId: 'x' })).ok, false);
 });
+
+test('смена имени: вход по новому имени, занятое имя и частые смены отклоняются', async () => {
+    let t = 1_700_000_000_000;
+    const { accounts } = await setup(() => t);
+    const a = await accounts.register('Анна', PW), b = await accounts.register('Борис', PW);
+    assert.equal((await accounts.rename(a.user.id, 'борис')).code, 'NAME_TAKEN');
+    assert.equal((await accounts.rename(a.user.id, 'x')).ok, false);
+    const r = await accounts.rename(a.user.id, 'Алиса');
+    assert.equal(r.ok, true); assert.equal(r.user.name, 'Алиса'); assert.equal(r.oldKey, nameKey('Анна'));
+    assert.equal((await accounts.login('Алиса', PW)).ok, true);
+    assert.equal((await accounts.login('Анна', PW)).ok, false);
+    assert.equal(accounts.isNameTaken(nameKey('Анна')), false);
+    assert.equal((await accounts.rename(a.user.id, 'Алла')).code, 'RENAME_WAIT');       // раз в сутки
+    t += 25 * 3600 * 1000;
+    assert.equal((await accounts.rename(a.user.id, 'Алла')).ok, true);
+    assert.equal((await accounts.rename(a.user.id, 'Алла')).changed, false);              // то же имя — ничего не делаем
+    assert.equal(accounts.byId(b.user.id).name, 'Борис');
+});
+
+test('смена имени хозяина переносит диалоги и обновляет подписи в данных', async () => {
+    const { accounts, dms, store } = await setup();
+    const owner = await accounts.register('Хозяин', PW), guest = await accounts.register('Гостья', PW);
+    const g = accounts.byId(guest.user.id);
+    const opened = await dms.open(g, 'Хозяин', { id: 'l_1', title: 'Дом' });
+    assert.equal(opened.ok, true);
+    const r = await accounts.rename(owner.user.id, 'Иван');
+    assert.equal(r.ok, true);
+    assert.equal(await dms.renameOwner(r.oldKey, nameKey('Иван'), 'Иван'), 1);
+    const list = dms.list(g);
+    assert.equal((list.convs || list)[0].with, 'Иван');
+    const again = await dms.open(g, 'Иван', { id: 'l_1', title: 'Дом' });
+    assert.equal(again.ok, true);
+    assert.equal(again.conv ? again.conv.id : again.id, opened.conv ? opened.conv.id : opened.id);   // тот же диалог, не новый
+    await store.close?.();
+});

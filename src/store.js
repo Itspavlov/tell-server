@@ -271,6 +271,21 @@ class MessageStore {
         return true;
     }
 
+    // Автор сменил имя: старые сообщения в комнатах подписываем новым
+    async renameUser(oldName, newName) {
+        if (!this.isReady()) return 0;
+        const want = String(oldName || '').trim().toLowerCase();
+        if (!want) return 0;
+        const touched = [];
+        for (const room of this.rooms) for (const m of (this.data[room] || [])) {
+            if (m && typeof m.user === 'string' && m.user.trim().toLowerCase() === want) { touched.push([m, m.user]); m.user = newName; }
+        }
+        if (!touched.length) return 0;
+        try { await this._commit(() => { for (const [m, u] of touched) m.user = u; }); }
+        catch (e) { return 0; }
+        return touched.length;
+    }
+
     // Удаление всего, что написал автор с таким именем (спам). Возвращает [{room,id}]
     async removeByUser(name) {
         if (!this.isReady()) throw new StoreError('STORE_UNAVAILABLE');

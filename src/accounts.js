@@ -18,6 +18,7 @@ const scrypt = promisify(crypto.scrypt);
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 const MAX_SESSIONS = 10;
 const MAX_USERS = 20000;
+const RENAME_COOLDOWN_MS = 24 * 3600 * 1000;   // имя можно менять раз в сутки: чтобы не выдавать себя за других
 
 // Ключ имени: «Тарас», «тарас» и «Т.арас» — один и тот же человек
 function nameKey(name) {
@@ -109,6 +110,31 @@ class AccountStore {
         const token = await this._newSession(user.id);
         try { await this.file.save(this.data); } catch (e) { return fail('SERVER_ERROR'); }
         return { ok: true, token, user: { id: user.id, name: user.name, verified: !!user.verified } };
+    }
+
+    // Смена имени: имя же и логин, поэтому ключ тоже меняется. Возвращает старый ключ, чтобы переписать ссылки на него
+    async rename(userId, rawName) {
+        const u = this.data.users[userId];
+        if (!u) return fail('AUTH_REQUIRED');
+        const n = normalizeName(rawName, this.limits);
+        if (!n.ok) return n;
+        if (n.value === u.name) return { ok: true, user: { id: u.id, name: u.name, verified: !!u.verified }, changed: false };
+        const key = nameKey(n.value);
+        const other = this.byKey.get(key);
+        if (other && other.id !== u.id) return fail('NAME_TAKEN');
+        const t = this.now();
+        if (u.renamedAt && t - u.renamedAt < RENAME_COOLDOWN_MS) return fail('RENAME_WAIT', { wait: Math.ceil((RENAME_COOLDOWN_MS - (t - u.renamedAt)) / 1000) });
+        const prev = { name: u.name, key: u.key, renamedAt: u.renamedAt };
+        if (key !== u.key) { this.byKey.delete(u.key); this.byKey.set(key, u); }
+        u.name = n.value; u.key = key; u.renamedAt = t;
+        try { await this.file.save(this.data); }
+        catch (e) {
+            if (key !== prev.key) { this.byKey.delete(key); this.byKey.set(prev.key, u); }
+            u.name = prev.name; u.key = prev.key; if (prev.renamedAt === undefined) delete u.renamedAt; else u.renamedAt = prev.renamedAt;
+            this.logger.error?.(`Имя не сохранено: ${e.code || e.message}`);
+            return fail('SERVER_ERROR');
+        }
+        return { ok: true, changed: true, user: { id: u.id, name: u.name, verified: !!u.verified }, oldKey: prev.key, oldName: prev.name };
     }
 
     // Проверенный хозяин: статус выдаёт только администратор

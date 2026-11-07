@@ -22,6 +22,13 @@ class ReviewStore {
         this.statsL = new Map(); this.statsO = new Map();
     }
 
+    async renameAuthor(userId, name) {
+        let n = 0;
+        for (const r of Object.values(this.data.items)) if (r.authorId === userId && r.authorName !== name) { r.authorName = name; n++; }
+        if (n) { try { await this.file.save(this.data); } catch (e) { this.logger.error?.(`reviews rename: ${e.code || e.message}`); } }
+        return n;
+    }
+
     async init() {
         const d = await this.file.load({});
         this.data = { items: d.items || {} };

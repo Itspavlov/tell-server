@@ -109,6 +109,14 @@ class ListingStore {
         this.bytes = 0;
     }
 
+    // Имя владельца хранится копией в карточке: после смены имени обновляем
+    async renameOwner(userId, name) {
+        let n = 0;
+        for (const l of Object.values(this.data.listings)) if (l.ownerId === userId && l.ownerName !== name) { l.ownerName = name; n++; }
+        if (n) { try { await this.file.save(this.data); } catch (e) { this.logger.error?.(`listings rename: ${e.code || e.message}`); } }
+        return n;
+    }
+
     async init() {
         const d = await this.file.load({ listings: {} });
         this.data = { listings: d.listings || {}, quota: d.quota || {} };

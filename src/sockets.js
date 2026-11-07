@@ -111,7 +111,6 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         socket.on('send-message', async (data, ack) => {
             try {
                 if (!rateOk(ack)) return;
-                if (!cfg.roomChat) return reply(ack, fail('CARDS_ONLY'));
 
                 // Вошедший пользователь пишет под именем своего аккаунта
                 if (account && data && typeof data === 'object' && !Array.isArray(data)) data = { ...data, user: account.name };
@@ -122,6 +121,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
                     return reply(ack, v);
                 }
                 const { room, user, text, image, clientId, replyTo } = v.value;
+                if (!cfg.roomChat && !(cfg.chatRooms || []).includes(room)) return reply(ack, fail('CARDS_ONLY'));
 
                 // Гость не может писать под именем зарегистрированного человека
                 if (!account && accounts && accounts.isNameTaken(nameKey(user))) return reply(ack, fail('NAME_TAKEN'));
