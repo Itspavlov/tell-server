@@ -255,11 +255,11 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
                 if (!needAuth(ack)) return;
                 if (!rateOk(ack)) return;
                 if (!data || typeof data !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
-                const res = await dms.send(account, data.convId, data.text, data.clientId === undefined ? null : data.clientId, data.video || null, data.voice || null);
+                const res = await dms.send(account, data.convId, data.text, data.clientId === undefined ? null : data.clientId, data.video || null, data.voice || null, data.photo || null);
                 if (!res.ok) return reply(ack, res);
                 if (!res.duplicate) {
                     for (const id of new Set(res.recipients)) io.to('user:' + id).emit('dm-message', res.message);
-                    ping(res.recipients.filter(id => id !== account.id), { kind: 'dm', title: account.name, body: res.message.video ? 'Видеосообщение' : (res.message.voice ? 'Голосовое сообщение' : res.message.text), open: 'dm:' + data.convId, tag: 'dm:' + data.convId });
+                    ping(res.recipients.filter(id => id !== account.id), { kind: 'dm', title: account.name, body: res.message.video ? 'Видеосообщение' : (res.message.voice ? 'Голосовое сообщение' : (res.message.photo ? '📷 ' + (res.message.text || 'Фото') : res.message.text)), open: 'dm:' + data.convId, tag: 'dm:' + data.convId });
                 }
                 reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: !!res.duplicate });
             } catch (e) { logger.error?.(`dm-send: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }

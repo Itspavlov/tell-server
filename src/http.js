@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, searches = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -551,6 +551,16 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!r.ok) return listingFail(res, r);
         io.emit('listing-changed', { id: r.listing.id });
         res.json({ ok: true, listing: r.listing, quota: r.quota });
+        // подписчикам на поиск: только о новых объявлениях
+        if (searches && notifier && r.created) {
+            const full = listings.get(r.listing.id);
+            if (full) searches.notifyFor({ ...full, ownerId: r.listing.ownerId || listings.rawById(r.listing.id).ownerId }).then((list) => list.forEach((n) => {
+                notifier.notify([n.userId], {
+                    kind: 'search', title: n.count > 1 ? 'Новое жильё по ' + n.count + ' вашим поискам' : 'Новое по вашему поиску',
+                    body: trunc(full.price, 30) + ' · ' + trunc(full.title, 80), open: 'listing:' + full.id, tag: 'search-' + n.searchId
+                });
+            })).catch(() => {});
+        }
         // арендаторам, чей запрос подошёл под это жильё (новое или изменённое), уходит уведомление
         if (requests && notifier) {
             const raw = listings.rawById(r.listing.id);
@@ -585,6 +595,33 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (stats) stats.drop(req.params.id);
         io.emit('listing-changed', { id: req.params.id, removed: true });
         res.json({ ok: true });
+    }
+
+    // ---------- подписки на поиск ----------
+    const searchFail = (res, r) => res.status(r.code === 'SEARCH_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
+
+    function searchesList(req, res) {
+        if (!searches) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        res.json({ ok: true, searches: searches.list(user.id) });
+    }
+    async function searchAdd(req, res) {
+        if (!searches) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await searches.add(user.id, req.body);
+        if (!r.ok) return searchFail(res, r);
+        res.json({ ok: true, search: r.search, searches: r.searches });
+    }
+    async function searchRemove(req, res) {
+        if (!searches) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.requestWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await searches.remove(user.id, req.params.id);
+        if (!r.ok) return searchFail(res, r);
+        res.json({ ok: true, searches: r.searches });
     }
 
     // ---------- отзывы ----------
@@ -716,7 +753,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!media) return res.status(503).json({ ok: false, code: 'SERVER_ERROR' });
         const rl = limiters.mediaUpload.hit(u.id);
         if (!rl.ok) return limited(res, rl);
-        const mediaKind = req.query && req.query.kind === 'voice' ? 'voice' : 'video';
+        const mediaKind = req.query && req.query.kind === 'voice' ? 'voice' : (req.query && req.query.kind === 'photo' ? 'photo' : 'video');
         const r = await media.save(u.id, Buffer.isBuffer(req.body) ? req.body : null, req.query && req.query.dur, mediaKind);
         if (!r.ok) return res.status(r.code === 'TOO_LARGE' ? 413 : (r.code === 'STORE_UNAVAILABLE' ? 503 : 400)).json({ ok: false, code: r.code });
         res.json({ ok: true, id: r.id, dur: r.dur, url: '/api/media/' + r.id });
@@ -732,15 +769,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, myStats, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, stats = null, searches = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, stats, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, stats, searches, media, dms, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -785,9 +822,12 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.use('/api/push', express.json({ limit: '4kb' }));
     app.post('/api/push/subscribe', h.pushSubscribe);
     app.post('/api/push/unsubscribe', h.pushUnsubscribe);
-    app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg'], limit: '7mb' }), h.mediaUpload);
+    app.post('/api/media/video', express.raw({ type: ['video/webm', 'video/mp4', 'audio/webm', 'audio/mp4', 'audio/ogg', 'image/jpeg', 'image/png', 'image/webp'], limit: '7mb' }), h.mediaUpload);
     app.get('/api/profile', h.userProfile);
     app.get('/api/my/stats', h.myStats);
+    app.get('/api/searches', h.searchesList);
+    app.post('/api/searches', express.json({ limit: '2kb' }), h.searchAdd);
+    app.delete('/api/searches/:id', h.searchRemove);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/quota', h.listingQuota);
     app.get('/api/listings/:id', h.listingGet);

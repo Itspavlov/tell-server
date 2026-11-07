@@ -62,7 +62,7 @@ class DmStore {
         const last = vis[vis.length - 1];
         return {
             id: c.id, with: other, adTitle: c.adTitle || '', adId: c.adId || '',
-            last: last ? { text: last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80)), video: !!last.video, voice: !!last.voice, time: last.time, mine: last.from === user.id } : null,
+            last: last ? { text: last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : (last.photo && !last.text ? 'Фото' : last.text.slice(0, 80))), video: !!last.video, voice: !!last.voice, time: last.time, mine: last.from === user.id } : null,
             updated: c.updated,
             unread: vis.filter(m => m.from !== user.id && m.time > myRead).length,
             peerRead: (otherId && c.reads && c.reads[otherId]) || 0,
@@ -72,7 +72,7 @@ class DmStore {
 
     _view(c, m) {
         const u = this.accounts.byId(m.from);
-        return { id: m.id, convId: c.id, from: { id: m.from, name: u ? u.name : 'Гость' }, text: m.text, time: m.time, ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {}) };
+        return { id: m.id, convId: c.id, from: { id: m.from, name: u ? u.name : 'Гость' }, text: m.text, time: m.time, ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {}), ...(m.photo ? { photo: m.photo } : {}) };
     }
 
     // Найти или создать диалог гостя с владельцем объявления
@@ -177,7 +177,7 @@ class DmStore {
         const otherId = this._otherId(user, c);
         const now = this.now();
         if (this.data.reports.some(r => r.reporterId === user.id && r.convId === c.id && now - r.time < DAY)) return fail('REPORT_DUPLICATE');
-        const last = c.messages.slice(-10).map(m => ({ from: m.from === user.id ? 'reporter' : 'other', text: m.video ? '[видео]' : (m.voice ? '[голосовое]' : m.text.slice(0, 300)), time: m.time }));
+        const last = c.messages.slice(-10).map(m => ({ from: m.from === user.id ? 'reporter' : 'other', text: m.video ? '[видео]' : (m.voice ? '[голосовое]' : (m.photo ? '[фото] ' + m.text.slice(0, 280) : m.text.slice(0, 300))), time: m.time }));
         const rep = { id: 'rp_' + crypto.randomBytes(6).toString('hex'), time: now, status: 'open', convId: c.id, reporterId: user.id, targetId: otherId, reason: rawReason, text: t.ok ? t.value : '', messages: last };
         this.data.reports.push(rep);
         const dropped = [];
@@ -202,11 +202,16 @@ class DmStore {
     }
 
     // Возвращает { ok, message, recipients: [id аккаунтов] }
-    async send(user, convId, rawText, clientId = null, rawVideo = null, rawVoice = null) {
+    async send(user, convId, rawText, clientId = null, rawVideo = null, rawVoice = null, rawPhoto = null) {
         const c = this._get(user, convId);
         if (!c) return fail('NO_CONVERSATION');
-        if (rawVideo && rawVoice) return fail('BAD_PAYLOAD');
-        let video = null, voice = null;
+        if ((rawVideo ? 1 : 0) + (rawVoice ? 1 : 0) + (rawPhoto ? 1 : 0) > 1) return fail('BAD_PAYLOAD');
+        let video = null, voice = null, photo = null;
+        if (rawPhoto) {
+            const chk = this.media && typeof rawPhoto === 'object' ? this.media.check(rawPhoto.id, user.id, 'photo') : { ok: false };
+            if (!chk.ok) return fail('BAD_PAYLOAD');
+            photo = { id: rawPhoto.id };
+        }
         if (rawVideo) {
             const chk = this.media && typeof rawVideo === 'object' ? this.media.check(rawVideo.id, user.id, 'video') : { ok: false };
             if (!chk.ok) return fail('BAD_PAYLOAD');
@@ -219,7 +224,7 @@ class DmStore {
         }
         const t = normalizeText(rawText || '', this.limits.textMax);
         if (!t.ok) return t;
-        if (!t.value && !video && !voice) return fail('EMPTY_MESSAGE');
+        if (!t.value && !video && !voice && !photo) return fail('EMPTY_MESSAGE');
         if (clientId !== null && (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId))) return fail('BAD_PAYLOAD');
 
         const otherId = this._otherId(user, c);
@@ -231,7 +236,7 @@ class DmStore {
         const rk = clientId ? `${user.id}|${convId}|${clientId}` : null;
         if (rk && this.recent.has(rk)) return { ok: true, message: this.recent.get(rk), recipients, duplicate: true };
 
-        const m = { id: 'dmm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), from: user.id, text: t.value, time: this.now(), ...(video ? { video } : {}), ...(voice ? { voice } : {}) };
+        const m = { id: 'dmm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), from: user.id, text: t.value, time: this.now(), ...(video ? { video } : {}), ...(voice ? { voice } : {}), ...(photo ? { photo } : {}) };
         c.messages.push(m);
         const dropped = [];
         while (c.messages.length > CONV_CAP) dropped.push(c.messages.shift());

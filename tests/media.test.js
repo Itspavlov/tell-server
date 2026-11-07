@@ -132,3 +132,33 @@ test('группы: видео и голос только свои, видны �
     assert.equal(groups.list(a)[0].last.text, 'Голосовое сообщение');
     assert.equal((await groups.send(a, gid, {})).ok, false);
 });
+
+test('фото: принимаются JPEG/PNG/WebP, чужие форматы и большие файлы отклоняются', async () => {
+    const { media } = await setup();
+    const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3000)]);
+    const png = Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG\r\n\x1a\n'), Buffer.alloc(3000)]);
+    const webp = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(3000)]);
+    for (const b of [jpg, png, webp]) { const r = await media.save('u1', b, 0, 'photo'); assert.equal(r.ok, true); assert.equal(media.check(r.id, 'u1', 'photo').ok, true); assert.equal(media.check(r.id, 'u2', 'photo').ok, false); assert.equal(media.check(r.id, 'u1', 'video').ok, false); }
+    assert.equal((await media.save('u1', webm(), 0, 'photo')).code, 'BAD_FORMAT');
+    assert.equal((await media.save('u1', jpg, 0, 'video')).code, 'BAD_FORMAT');
+    assert.equal((await media.save('u1', Buffer.concat([jpg, Buffer.alloc(2_100_000)]), 0, 'photo')).code, 'TOO_LARGE');
+    const ok = await media.save('u1', jpg, 0, 'photo');
+    assert.equal(media.get(ok.id).mime, 'image/jpeg');
+});
+
+test('фото в личном сообщении: можно с подписью, чужое фото прикрепить нельзя, не вместе с голосом', async () => {
+    const { accounts, media, dms } = await setup();
+    const a = await mk(accounts, 'Анна'), b = await mk(accounts, 'Борис');
+    const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3000)]);
+    const ph = await media.save(a.id, jpg, 0, 'photo');
+    const o = await dms.open(a, 'Борис', {});
+    assert.equal((await dms.send(b, o.conv.id, '', null, null, null, { id: ph.id })).ok, false);
+    const vo = await media.save(a.id, webm(), 5, 'voice');
+    assert.equal((await dms.send(a, o.conv.id, '', null, null, { id: vo.id }, { id: ph.id })).ok, false);
+    const r = await dms.send(a, o.conv.id, 'Вот комната', null, null, null, { id: ph.id });
+    assert.equal(r.ok, true); assert.deepEqual(r.message.photo, { id: ph.id }); assert.equal(r.message.text, 'Вот комната');
+    const only = await dms.send(a, o.conv.id, '', null, null, null, { id: (await media.save(a.id, jpg, 0, 'photo')).id });
+    assert.equal(only.ok, true);
+    assert.equal(dms.list(b).find(c => c.id === o.conv.id).last.text, 'Фото');
+    assert.equal((await dms.send(a, o.conv.id, '')).ok, false);
+});

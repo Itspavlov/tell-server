@@ -151,3 +151,24 @@ test('кабинет хозяина: просмотры (без своих), и�
     const no = res(); h.myStats(rq(null), no); assert.equal(no.code, 401);
     const other = await env.reg('Чужой'); const o = res(); h.myStats(rq(other.token), o); assert.deepEqual(o.body.listings, []);
 });
+
+test('подписка на поиск: новое объявление приводит к уведомлению, правка — нет', async () => {
+    const { SearchStore } = require('../src/searches');
+    const env = await setup();
+    const guest = await env.reg('Ищущий');
+    const searches = new SearchStore({ dataDir: env.cfg.dataDir, logger: silent }); await searches.init();
+    await searches.add(guest.user.id, { name: 'Анапа', filter: { q: 'анапа', max: 5000 } });
+    const notes = [];
+    const h = createHandlers({ cfg: env.cfg, store: await makeStore(env.cfg), admin: createAdmin({ token: '', dataDir: env.cfg.dataDir, logger: silent }), accounts: env.accounts, listings: env.listings, searches, limiters: limiters(env.cfg), io: makeIo(), notifier: { notify: (ids, p) => notes.push({ ids, p }) }, logger: silent });
+    const save = async (body) => { const r = res(); await h.listingSave(rq(env.host.token, { body }), r); await new Promise(x => setTimeout(x, 30)); return r; };
+    const first = await save({ ad: AD(), profile: { phone: '1', about: '', avatar: '' } });
+    assert.equal(first.code, 200, JSON.stringify(first.body));
+    assert.equal(notes.filter(n => n.p.kind === 'search').length, 1);
+    const n = notes.find(x => x.p.kind === 'search');
+    assert.deepEqual(n.ids, [guest.user.id]); assert.match(n.p.open, /^listing:l_/);
+    const id = first.body.listing.id;
+    await save({ id, ad: { ...AD(), title: 'Студия обновлена' }, profile: { phone: '1', about: '', avatar: '' } });
+    assert.equal(notes.filter(n => n.p.kind === 'search').length, 1);
+    const L = res(); h.searchesList(rq(guest.token), L); assert.equal(L.body.searches.length, 1);
+    const D = res(); await h.searchRemove(rq(guest.token, { params: { id: L.body.searches[0].id } }), D); assert.equal(D.body.searches.length, 0);
+});

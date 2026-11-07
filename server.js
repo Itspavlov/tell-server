@@ -24,6 +24,7 @@ const { Inbox } = require('./src/inbox');
 const { FavoriteStore } = require('./src/favorites');
 const { ReviewStore } = require('./src/reviews');
 const { StatsStore } = require('./src/stats');
+const { SearchStore } = require('./src/searches');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -60,6 +61,8 @@ async function start(env = process.env, logger = console) {
     listings.reviews = reviews;
     const stats = new StatsStore({ dataDir: cfg.dataDir, logger });
     await stats.init();
+    const searches = new SearchStore({ dataDir: cfg.dataDir, logger });
+    await searches.init();
 
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
     await pushStore.init();
@@ -80,7 +83,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, stats, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, stats, searches, media, dms, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);
