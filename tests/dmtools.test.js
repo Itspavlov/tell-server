@@ -125,3 +125,21 @@ test('жалоба: причина обязательна, дубль за су�
     r = res(); await h.adminReportClose(rq({ headers: hdr, params: { id: 'rp_nope' } }), r); assert.equal(r.code, 404);
     await env.store.close();
 });
+
+test('один диалог на пару аккаунтов: встречное обращение продолжает тот же диалог', async () => {
+    const env = await setup(); const { a, b, convId } = await pair(env);
+    await call(a.sock, 'dm-send', { convId, text: 'Привет, интересует студия' });
+    // Борис пишет Ане по другой услуге — это тот же диалог, а не второй
+    const back = await call(b.sock, 'dm-open', { ownerName: 'Аня', adId: 'svc_9', adTitle: 'Развлечение: Яхта' });
+    assert.equal(back.ok, true); assert.equal(back.conv.id, convId); assert.equal(back.created, false);
+    // и у Ани, и у Бориса в списке ровно один диалог
+    assert.equal((await call(a.sock, 'dm-list')).convs.length, 1);
+    assert.equal((await call(b.sock, 'dm-list')).convs.length, 1);
+    // новое сообщение Бориса попадает в тот же диалог и видно Ане
+    await call(b.sock, 'dm-send', { convId, text: 'Здравствуйте! Интересует яхта' });
+    const h = await call(a.sock, 'dm-history', { convId });
+    assert.equal(h.messages.length, 2);
+    // повторное обращение к тому же человеку по другой услуге тоже не создаёт второй диалог
+    const again = await call(a.sock, 'dm-open', { ownerName: 'Борис', adId: 'svc_7', adTitle: 'Развлечение: Прогулка' });
+    assert.equal(again.conv.id, convId);
+});

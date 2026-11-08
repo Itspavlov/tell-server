@@ -1,7 +1,7 @@
 'use strict';
 // ============================================
 // Личные сообщения между двумя аккаунтами.
-// Диалог = (гость, имя владельца объявления). Читать и писать в нём
+// Диалог = пара аккаунтов (гость и владелец объявления; в обе стороны это один диалог). Читать и писать в нём
 // могут только два участника; проверка идёт на сервере по аккаунту.
 // Только текст. Хранилище — файл dms.json.
 // ============================================
@@ -88,6 +88,8 @@ class DmStore {
 
         const pairKey = user.id + '|' + ownerKey;
         let c = this.data.convs[this.pair.get(pairKey)];
+        // один диалог на пару аккаунтов: если собеседник уже писал вам первым, продолжаем тот же диалог
+        if (!c) { const peer = this.accounts.findByKey(ownerKey); if (peer) c = this.data.convs[this.pair.get(peer.id + '|' + user.key)]; }
         let created = false;
         if (!c) {
             c = { id: 'dm_' + crypto.randomBytes(8).toString('hex'), guestId: user.id, ownerKey, ownerName: n.value, adId, adTitle, created: this.now(), updated: this.now(), messages: [] };
