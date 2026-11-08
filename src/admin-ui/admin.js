@@ -67,14 +67,14 @@
     function renderShell() {
         const body = el('div', { id: 'body' });
         const tabs = el('div', { class: 'tabs' });
-        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['reviews', 'Отзывы'], ['services', 'Развлечения'], ['audit', 'Журнал']];
+        const defs = [['overview', 'Обзор'], ['requests', 'Заявки'], ['users', 'Пользователи'], ['chats', 'Чаты'], ['listings', 'Объявления'], ['reports', 'Жалобы'], ['reviews', 'Отзывы'], ['services', 'Развлечения'], ['weather', 'Погода'], ['audit', 'Журнал']];
         for (const [id, label] of defs) {
             tabs.append(el('button', { class: 'tab' + (tab === id ? ' on' : ''), onclick: () => { tab = id; stopAuto(); renderShell(); } },
                 label, (id === 'requests' && counts.requests) || (id === 'reports' && counts.reports) ? el('span', { class: 'badge' }, id === 'reports' ? counts.reports : counts.requests) : null));
         }
         app.replaceChildren(el('div', { class: 'wrap' },
             el('div', { class: 'top' }, el('h1', {}, 'Tell — модерация'), el('button', { class: 'btn ghost', onclick: logout }, 'Выйти')), tabs, body));
-        const views = { overview: vOverview, requests: vRequests, users: vUsers, chats: vChats, listings: vListings, reports: vReports, reviews: vReviews, services: vServices, audit: vAudit };
+        const views = { overview: vOverview, requests: vRequests, users: vUsers, chats: vChats, listings: vListings, reports: vReports, reviews: vReviews, services: vServices, weather: vWeather, audit: vAudit };
         run(body, views[tab]);
     }
 
@@ -212,6 +212,37 @@
                     el('b', {}, x.title), el('span', { class: 'pill' }, x.price ? x.price + ' ₽' : 'без цены'), el('span', { class: 'mut' }, '  ' + x.ownerName + ' · ' + (x.city || '') + ' · фото: ' + x.photos + ' · ' + fmt(x.created))),
                 el('div', { class: 'actions' },
                     el('button', { class: 'btn bad', onclick: () => confirm('Удалить карточку развлечения?') && act(() => api('DELETE', '/services/' + encodeURIComponent(x.id)), 'Карточка удалена', true) }, 'Удалить'))))));
+    }
+
+    // ---------- Погода в шапке ----------
+    async function vWeather(body) {
+        const d = await api('GET', '/weather');
+        const MODE = [['auto', 'Автоматически'], ['manual', 'Вручную'], ['off', 'Не показывать']];
+        const draw = (data) => {
+            const card = (kind, title, hint) => {
+                const s = data[kind];
+                const sel = el('select', {}, ...MODE.map(([v, t]) => el('option', { value: v, ...(s.mode === v ? { selected: 'selected' } : {}) }, t)));
+                const inp = el('input', { type: 'number', step: '0.5', min: data.limits[kind][0], max: data.limits[kind][1], value: s.manual == null ? '' : s.manual, placeholder: '°C', style: 'max-width:120px' });
+                const sync = () => { inp.disabled = sel.value !== 'manual'; };
+                sel.addEventListener('change', sync); sync();
+                const autoTxt = s.auto == null ? 'автоматика пока не получила данные' : 'автоматика: ' + s.auto + '°, ' + fmt(s.autoAt);
+                return el('div', { class: 'card' },
+                    el('div', { class: 'row' },
+                        el('div', {}, el('b', {}, title), el('div', { class: 'mut' }, hint), el('div', { class: 'mut' }, autoTxt),
+                            el('div', {}, 'Сейчас на сайте: ', el('b', {}, s.shown == null ? 'не показывается' : Math.round(s.shown) + '°'))),
+                        el('div', { class: 'actions' }, sel, inp,
+                            el('button', { class: 'btn ok', onclick: () => act(async () => {
+                                const payload = { [kind]: { mode: sel.value, ...(sel.value === 'manual' ? { manual: inp.value } : {}) } };
+                                draw(await api('POST', '/weather', payload));
+                            }, 'Сохранено') }, 'Сохранить'))));
+            };
+            body.replaceChildren(
+                card('air', 'Температура воздуха', 'Архипо-Осиповка, показывается в шапке главной.'),
+                card('water', 'Температура воды', 'Море у Архипо-Осиповки.'),
+                el('div', { class: 'actions' }, el('button', { class: 'btn', onclick: () => act(async () => draw(await api('POST', '/weather/refresh')), 'Данные обновлены') }, 'Обновить автоданные сейчас')),
+                el('p', { class: 'mut' }, 'Автоматические значения берутся из Open-Meteo раз в 30 минут. Для воды это модельные данные, поэтому при необходимости задайте значение вручную. Ручное значение остаётся, пока вы его не смените.'));
+        };
+        draw(d);
     }
 
     // ---------- Журнал ----------

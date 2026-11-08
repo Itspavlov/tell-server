@@ -32,6 +32,16 @@ function guestCapacity(l) {
 
 const norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').trim();
 
+// Нестрогое сравнение названий: без пробелов, дефисов и знаков, с учётом падежных окончаний.
+// «Архипо-Осиповка», «Архипо Осиповка» и «в Архипо-Осиповке» считаются одним местом.
+const squash = (s) => norm(s).replace(/[^a-zа-я0-9]/g, '');
+function mentions(hay, needle) {
+    const n = squash(needle);
+    if (!n) return true;
+    const stem = n.length >= 6 ? n.slice(0, n.length - 2) : n.length === 5 ? n.slice(0, 4) : n;
+    return squash(hay).includes(stem);
+}
+
 // l — объявление в том виде, как оно хранится в ListingStore
 function matches(req, l) {
     // карточки «Ищу/Предоставляю» других разделов к жилью не подбираются
@@ -40,12 +50,10 @@ function matches(req, l) {
     if (!a || a.type !== 'rent') return false;
     if (req.category && (a.category || 'apartment') !== req.category) return false;
     if (req.city) {
-        const hay = norm(a.location + ' ' + a.title);
-        if (!hay.includes(norm(req.city))) return false;
+        if (!mentions(a.location + ' ' + a.title, req.city)) return false;
     }
     if (req.district) {
-        const hay = norm(a.location + ' ' + a.title + ' ' + a.description);
-        if (!hay.includes(norm(req.district))) return false;
+        if (!mentions(a.location + ' ' + a.title + ' ' + a.description, req.district)) return false;
     }
     if (req.budget && a.priceNum > req.budget) return false;
     if (req.guests) {
@@ -59,4 +67,4 @@ function matches(req, l) {
     return true;
 }
 
-module.exports = { matches, nights, guestCapacity };
+module.exports = { matches, nights, guestCapacity, mentions };

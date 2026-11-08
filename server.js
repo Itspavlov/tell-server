@@ -26,6 +26,7 @@ const { ReviewStore } = require('./src/reviews');
 const { ServiceStore } = require('./src/services');
 const { StatsStore } = require('./src/stats');
 const { SearchStore } = require('./src/searches');
+const { WeatherStore } = require('./src/weather');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -66,6 +67,8 @@ async function start(env = process.env, logger = console) {
     await stats.init();
     const searches = new SearchStore({ dataDir: cfg.dataDir, logger });
     await searches.init();
+    const weather = new WeatherStore({ dataDir: cfg.dataDir, logger });
+    await weather.init();
 
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
     await pushStore.init();
@@ -86,7 +89,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, stats, searches, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, stats, searches, media, dms, weather, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);
@@ -100,6 +103,10 @@ async function start(env = process.env, logger = console) {
         kind: 'request', title: 'Срок запроса истёк', body: (x.city ? x.city + ': ' : '') + 'можно создать новый запрос', open: 'profile', tag: 'req-exp-' + x.id
     }))).catch(() => {}), 10 * 60 * 1000);
     expirer.unref();
+    // погода: сразу при старте и затем раз в 30 минут (сбой источника не мешает работе)
+    weather.refresh().catch(() => {});
+    const weatherTimer = setInterval(() => weather.refresh().catch(() => {}), 30 * 60 * 1000);
+    weatherTimer.unref();
 
     await new Promise((resolve) => server.listen(cfg.port, resolve));
     logger.info(`Tell Server v2 запущен на порту ${cfg.port}. Админ-доступ: ${admin.isEnabled() ? 'включён' : 'ВЫКЛЮЧЕН (ADMIN_TOKEN не задан)'}`);

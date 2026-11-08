@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -761,6 +761,36 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true });
     }
 
+    // ---------- погода в шапке ----------
+    function weatherGet(req, res) {
+        if (!weather) return res.status(404).json({ error: 'Not found' });
+        res.set('Cache-Control', 'public, max-age=300');
+        res.json({ ok: true, ...weather.current() });
+    }
+    async function adminWeatherGet(req, res) {
+        if (!weather) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_weather', {}))) return;
+        res.json({ ok: true, ...weather.settings() });
+    }
+    async function adminWeatherSet(req, res) {
+        if (!weather) return res.status(404).json({ error: 'Not found' });
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (!(await requireAdmin(req, res, 'set_weather', {}))) return;
+        const r = await weather.update(b);
+        if (!r.ok) return res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
+        await admin.audit('set_weather', {
+            air: b.air ? { mode: trunc(b.air.mode, 8), manual: b.air.manual } : undefined,
+            water: b.water ? { mode: trunc(b.water.mode, 8), manual: b.water.manual } : undefined, ip: ipOf(req)
+        });
+        res.json({ ok: true, ...weather.settings() });
+    }
+    async function adminWeatherRefresh(req, res) {
+        if (!weather) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'refresh_weather', {}))) return;
+        await weather.refresh();
+        res.json({ ok: true, ...weather.settings() });
+    }
+
     // ---------- услуги в профиле ----------
     const serviceFail = (res, r) => res.status(
         r.code === 'SERVICE_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 : r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL' ? 503 :
@@ -877,15 +907,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, stats, searches, media, dms, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, stats, searches, media, dms, weather, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -920,6 +950,10 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/admin/services', h.adminServices);
     app.delete('/api/admin/services/:id', h.adminServiceDelete);
     app.get('/api/admin/audit', h.adminAudit);
+    app.get('/api/weather', h.weatherGet);
+    app.get('/api/admin/weather', h.adminWeatherGet);
+    app.post('/api/admin/weather', express.json({ limit: '1kb' }), h.adminWeatherSet);
+    app.post('/api/admin/weather/refresh', h.adminWeatherRefresh);
     app.get('/api/admin/reports', h.adminReports);
     app.post('/api/admin/reports/:id/close', h.adminReportClose);
     app.use('/api/auth', express.json({ limit: '2kb' }));

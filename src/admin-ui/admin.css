@@ -19,7 +19,7 @@ h1 { font-size:20px; margin:0; }
 .btn.ghost { background:transparent; }
 .btn:disabled { opacity:.5; cursor:default; }
 .actions { display:flex; gap:6px; flex-wrap:wrap; }
-input[type=text], input[type=password], select { background:#0c1420; border:1px solid var(--line); color:var(--text); padding:9px 12px; border-radius:10px; width:100%; }
+input[type=text], input[type=password], input[type=number], select { background:#0c1420; border:1px solid var(--line); color:var(--text); padding:9px 12px; border-radius:10px; width:100%; }
 .bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
 .bar input[type=text] { max-width:280px; }
 .login { max-width:380px; margin:12vh auto 0; }
