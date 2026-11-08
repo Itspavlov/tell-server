@@ -13,7 +13,7 @@ const crypto = require('crypto');
 const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, fail } = require('./validate');
-const { matches } = require('./match');
+const { matches, similar } = require('./match');
 
 const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
 const SECTIONS = ['housing', 'work', 'trips', 'services'];   // раздел, где лежит карточка
@@ -44,12 +44,13 @@ function cleanRequest(raw, today) {
     if (raw.guests !== undefined && raw.guests !== '' && raw.guests !== null && num(raw.guests, 1, 30) === null) return fail('BAD_REQUEST');
     if (raw.budget !== undefined && raw.budget !== '' && raw.budget !== null && num(raw.budget, 1, 10_000_000) === null) return fail('BAD_REQUEST');
     const guests = num(raw.guests, 1, 30), budget = num(raw.budget, 1, 10_000_000);
+    const pets = housing && (raw.pets === true || raw.pets === 'true' || raw.pets === 1 || raw.pets === '1');
     if (housing && !city && !note && !category) return fail('BAD_REQUEST');   // совсем пустой запрос не нужен
     if (!housing && !title) return fail('BAD_REQUEST');                       // у остальных разделов нужен заголовок
-    return { ok: true, value: { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget, text: note } };
+    return { ok: true, value: { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget, pets, text: note } };
 }
 
-const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
+const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.pets ? 'pets' : '', v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
 
 class RequestStore {
     constructor({ dataDir, limits, now = Date.now, logger = console, fsImpl, dayOf }) {
@@ -81,7 +82,7 @@ class RequestStore {
             id: r.id, ownerId: r.ownerId, ownerName: r.ownerName, created: r.created, updated: r.updated,
             expires: r.created + this._ttl(), status: this._status(r), mine: viewerId === r.ownerId,
             section: r.section || 'housing', kind: r.kind || 'seek', title: r.title || '', category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
-            guests: r.guests, budget: r.budget, text: r.text, notify: r.notify !== false
+            guests: r.guests, budget: r.budget, pets: !!r.pets, text: r.text, notify: r.notify !== false
         };
     }
 
@@ -224,11 +225,16 @@ class RequestStore {
         const r = typeof id === 'string' ? this.data.requests[id] : null;
         if (!r) return fail('REQUEST_NOT_FOUND');
         if (r.ownerId !== user.id) return fail('NOT_OWNER');
-        const list = listings.raws().filter(l => l.ownerId !== user.id && matches(r, l)).sort((a, b) => b.updated - a.updated).slice(0, 30).map(l => listings.light(l));
-        return { ok: true, listings: list };
+        const mine = listings.raws().filter(l => l.ownerId !== user.id);
+        const byFresh = (a, b) => b.updated - a.updated;
+        const list = mine.filter(l => matches(r, l)).sort(byFresh).slice(0, 30).map(l => listings.light(l));
+        // другие типы жилья: цена, гости, даты, место и животные подходят, не совпадает только тип
+        const other = mine.filter(l => similar(r, l)).sort(byFresh).slice(0, 20).map(l => listings.light(l));
+        return { ok: true, listings: list, similar: other };
     }
 
     countMatches(r, listings) { return listings.raws().filter(l => l.ownerId !== r.ownerId && matches(r, l)).length; }
+    countSimilar(r, listings) { return listings.raws().filter(l => l.ownerId !== r.ownerId && similar(r, l)).length; }
     offerCount(requestId) { return Object.values(this.data.offers).filter(o => o.requestId === requestId && o.status === 'new').length; }
 
     // «Подходящие арендаторы»: чужие активные запросы, под которые подходит хотя бы одно моё объявление

@@ -110,6 +110,10 @@ test('объявление: опасные данные отклоняются �
     const l = r.body.listing;
     assert.equal(l.facts.length, 1);
     assert.deepEqual(l.amenities, ['wifi']);
+    // удобства приходят подписями на русском — они должны сохраняться
+    const r2 = await send(AD({ amenities: ['Wi-Fi', 'С животными', 'Для детей', '<b>x</b>', 'а'.repeat(31)] }));
+    assert.equal(r2.code, 200);
+    assert.deepEqual(r2.body.listing.amenities, ['Wi-Fi', 'С животными', 'Для детей']);
     assert.deepEqual(l.busy, ['2027-01-01']);
     assert.equal(l.coords, null);
     assert.equal(l.owner.phone, '');

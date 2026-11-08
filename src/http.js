@@ -393,7 +393,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const status = ['active', 'found', 'closed', 'expired', 'all'].includes(q.status) ? q.status : 'active';
         const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', section: ['housing', 'work', 'trips', 'services'].includes(q.section) ? q.section : '', kind: ['seek', 'offer'].includes(q.kind) ? q.kind : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
         // у своих активных запросов показываем, сколько вариантов найдено и сколько предложений пришло
-        if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
+        if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.similarCount = requests.countSimilar(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
         res.json({ ok: true, requests: out, cooldown: user ? requests.cooldown(user.id) : 0 });
     }
 
@@ -406,7 +406,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!r.ok) return requestFail(res, r);
         io.emit('request-changed', { id: r.request.id });
         const found = listings ? requests.countMatches(requests.data.requests[r.request.id], listings) : 0;
-        res.json({ ok: true, request: r.request, cooldown: r.cooldown, matches: found });
+        const alike = listings ? requests.countSimilar(requests.data.requests[r.request.id], listings) : 0;
+        res.json({ ok: true, request: r.request, cooldown: r.cooldown, matches: found, similar: alike });
     }
 
     function requestMatches(req, res) {
@@ -414,7 +415,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const r = requests.matchesFor(user, req.params.id, listings);
         if (!r.ok) return requestFail(res, r);
-        res.json({ ok: true, listings: r.listings });
+        res.json({ ok: true, listings: r.listings, similar: r.similar || [] });
     }
 
     function requestsMatching(req, res) {

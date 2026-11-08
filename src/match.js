@@ -42,13 +42,20 @@ function mentions(hay, needle) {
     return squash(hay).includes(stem);
 }
 
+// Разрешены ли животные: хозяин отметил удобство «С животными»
+function allowsPets(l) {
+    return ((l.ad && l.ad.amenities) || []).some(x => /животн/i.test(String(x)));
+}
+
 // l — объявление в том виде, как оно хранится в ListingStore
-function matches(req, l) {
+// opts.anyType: не сверять категорию (для блока «Другие типы жилья»)
+function matches(req, l, opts) {
     // карточки «Ищу/Предоставляю» других разделов к жилью не подбираются
     if (req && req.section && req.section !== 'housing') return false;
     const a = l && l.ad;
     if (!a || a.type !== 'rent') return false;
-    if (req.category && (a.category || 'apartment') !== req.category) return false;
+    if (!(opts && opts.anyType) && req.category && (a.category || 'apartment') !== req.category) return false;
+    if (req.pets && !allowsPets(l)) return false;
     if (req.city) {
         if (!mentions(a.location + ' ' + a.title, req.city)) return false;
     }
@@ -67,4 +74,9 @@ function matches(req, l) {
     return true;
 }
 
-module.exports = { matches, nights, guestCapacity, mentions };
+// Подходит по всем условиям, кроме типа жилья: цена, гости, даты, место и животные те же
+function similar(req, l) {
+    return !!(req && req.category) && matches(req, l, { anyType: true }) && !matches(req, l);
+}
+
+module.exports = { matches, similar, allowsPets, nights, guestCapacity, mentions };

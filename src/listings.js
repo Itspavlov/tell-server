@@ -26,7 +26,8 @@ const THUMB_BYTES = 80_000;
 const AVATAR_BYTES = 120_000;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ICON_RE = /^fa-[a-z0-9-]{1,30}$/;
-const KEY_RE = /^[\w-]{1,30}$/;
+// удобства приходят подписями на русском («С животными», «Wi-Fi»): буквы, цифры, пробел, дефис
+const KEY_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,29}$/u;
 
 const text = (v, max) => { const r = normalizeText(typeof v === 'string' ? v : '', max); return r.ok ? r.value : ''; };
 const num = (v, min, max) => { const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? n : null; };

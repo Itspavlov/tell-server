@@ -430,3 +430,63 @@ test('карточки других разделов: заголовок обя�
     assert.equal(e.ok, true); assert.equal(e.request.section, 'work'); assert.equal(e.request.kind, 'offer'); assert.equal(e.request.title, 'Нужен повар');
     await store.close();
 });
+
+// у каждого хозяина лимит 3 новых объявления в день, поэтому для тестов заводим хозяев по мере надобности
+async function manyOwners() {
+    const w = await withListings();
+    let n = 0, cur = null, used = 3;
+    const add2 = async (o) => {
+        if (used >= 3) { cur = await w.reg('Хозяин' + (++n), true); used = 0; }
+        used++;
+        const r = await w.listings.save(cur, { ad: LAD(o), profile: {} });
+        assert.equal(r.ok, true, JSON.stringify(r));
+        return r.listing.id;
+    };
+    return { ...w, add: add2 };
+}
+
+test('другие типы жилья: подходят по цене, гостям, датам и животным, не совпадает только тип', async () => {
+    const { requests, listings, reg, add, store, clock } = await manyOwners();
+    const a = await reg('Анна');
+    const same = await add({ title: 'Тот же тип' });
+    const house = await add({ title: 'Дом', category: 'house' });
+    await add({ title: 'Дом дорого', category: 'house', priceNum: 9000 });
+    await add({ title: 'Дом занят', category: 'house', busy: ['2027-03-16'] });
+    await add({ title: 'Дом не вмещает', category: 'house', form: { guests: '1' } });
+    await add({ title: 'Другой город', category: 'house', location: 'Сочи' });
+    const q = (await requests.create(a, REQ({ budget: 3500 }))).request;
+    const m = requests.matchesFor(a, q.id, listings);
+    assert.deepEqual(m.listings.map(x => x.id), [same], 'точные совпадения прежние');
+    assert.deepEqual(m.similar.map(x => x.id), [house], 'похожие: только другой тип и всё остальное подходит');
+    assert.equal(m.similar[0].category, 'house');
+    assert.equal(requests.countSimilar(requests.data.requests[q.id], listings), 1);
+    // запрос без типа ничего не делит на «точные» и «похожие»
+    clock.t += 61000;   // между запросами пауза 60 секунд
+    const any = (await requests.create(a, REQ({ category: '', budget: 3501 }))).request;
+    const m2 = requests.matchesFor(a, any.id, listings);
+    assert.equal(m2.similar.length, 0);
+    assert.equal(m2.listings.length, 2);
+    await store.close();
+});
+
+test('с животными: нужен значок «С животными» у объявления, признак сохраняется и правится', async () => {
+    const { requests, listings, reg, add, store, clock } = await manyOwners();
+    const a = await reg('Анна');
+    const yes = await add({ title: 'Можно с животными', amenities: ['Wi-Fi', 'С животными'] });
+    await add({ title: 'Без отметки', amenities: ['Wi-Fi'] });
+    const yesHouse = await add({ title: 'Дом с животными', category: 'house', amenities: ['С животными'] });
+    await add({ title: 'Дом без отметки', category: 'house' });
+    const q = (await requests.create(a, REQ({ pets: true, budget: 3500 }))).request;
+    assert.equal(q.pets, true);
+    const m = requests.matchesFor(a, q.id, listings);
+    assert.deepEqual(m.listings.map(x => x.id), [yes]);
+    assert.deepEqual(m.similar.map(x => x.id), [yesHouse], 'в «другие типы» тоже только с животными');
+    // без животных ограничения нет
+    clock.t += 61000;
+    const q2 = (await requests.create(a, REQ({ budget: 3501 }))).request;
+    assert.equal(q2.pets, false);
+    assert.equal(requests.matchesFor(a, q2.id, listings).listings.length, 2);
+    // правка может снять и вернуть признак
+    assert.equal((await requests.edit(a, q.id, REQ({ pets: false, budget: 3500 }))).request.pets, false);
+    await store.close();
+});
