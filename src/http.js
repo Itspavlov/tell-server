@@ -348,6 +348,49 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true });
     }
 
+    async function adminRequests(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_requests', {}))) return;
+        res.json({ ok: true, requests: requests.listAll() });
+    }
+
+    async function adminDeleteRequest(req, res) {
+        if (!requests) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'delete_request', { id: trunc(req.params.id, 40) }))) return;
+        const r = await requests.removeAny(req.params.id);
+        if (!r.ok) return res.status(r.code === 'REQUEST_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'request', title: 'Запрос удалён', body: 'Модератор удалил ваш запрос' + (r.title ? ' «' + trunc(r.title, 60) + '»' : ''), open: 'profile', tag: 'request-removed' });
+        await admin.audit('delete_request', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), title: trunc(r.title, 60), ip: ipOf(req) });
+        if (io && typeof io.emit === 'function') io.emit('request-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
+    // Вход «глазами пользователя» (режим поддержки): короткая сессия без доступа к личной переписке
+    async function adminImpersonate(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'impersonate', {}))) return;
+        const b = req.body || {};
+        if (typeof b.name !== 'string' || !b.name.trim()) return res.status(400).json({ ok: false, code: 'BAD_REQUEST' });
+        const u = accounts.findByKey(nameKey(b.name));
+        if (!u) return res.status(404).json({ ok: false, code: 'NO_USER' });
+        const s = await accounts.startSupport(u.key);
+        if (!s) return res.status(503).json({ ok: false, code: 'SERVER_ERROR' });
+        await admin.audit('impersonate', { target: trunc(u.name, 40), ip: ipOf(req) });
+        res.json({ ok: true, token: s.token, user: { id: s.user.id, name: s.user.name, verified: !!s.user.verified }, expires: s.expires });
+    }
+
+    // В режиме поддержки закрыто всё личное: переписка, уведомления, push, медиа, данные аккаунта.
+    // Разрешено смотреть и править объявления, услуги и запросы.
+    const SUPPORT_OK = /^\/(auth\/(me|logout)|profile|my\/stats|weather|favorites|searches|listings|services|requests|reviews)(\/|$)/;
+    const SUPPORT_DENY = /^\/requests\/(matching|[^/]+\/(offers|matches))(\/|$)/;
+    async function supportGuard(req, res, next) {
+        const t = bearer(req);
+        if (t && accounts && accounts.isSupport(t) && !(SUPPORT_OK.test(req.path) && !SUPPORT_DENY.test(req.path))) {
+            return res.status(403).json({ ok: false, code: 'SUPPORT_MODE' });
+        }
+        next();
+    }
+
     async function adminAudit(req, res) {
         if (!(await requireAdmin(req, res, 'view_audit', {}))) return;
         res.json({ ok: true, entries: await admin.readAudit(parseInt(req.query && req.query.limit, 10) || 100) });
@@ -908,7 +951,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -950,8 +993,12 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.delete('/api/admin/reviews/:id', h.adminReviewDelete);
     app.get('/api/admin/services', h.adminServices);
     app.delete('/api/admin/services/:id', h.adminServiceDelete);
+    app.post('/api/admin/impersonate', h.adminImpersonate);
+    app.get('/api/admin/requests', h.adminRequests);
+    app.delete('/api/admin/requests/:id', h.adminDeleteRequest);
     app.get('/api/admin/audit', h.adminAudit);
     app.get('/api/weather', h.weatherGet);
+    app.use('/api', h.supportGuard);
     app.get('/api/admin/weather', h.adminWeatherGet);
     app.post('/api/admin/weather', express.json({ limit: '1kb' }), h.adminWeatherSet);
     app.post('/api/admin/weather/refresh', h.adminWeatherRefresh);

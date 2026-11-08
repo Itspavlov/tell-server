@@ -16,6 +16,7 @@ const { normalizeName, validatePassword, fail } = require('./validate');
 
 const scrypt = promisify(crypto.scrypt);
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
+const SUPPORT_TTL_MS = 30 * 60 * 1000;
 const MAX_SESSIONS = 10;
 const MAX_USERS = 20000;
 const RENAME_COOLDOWN_MS = 24 * 3600 * 1000;   // имя можно менять раз в сутки: чтобы не выдавать себя за других
@@ -62,12 +63,31 @@ class AccountStore {
         const mine = [];
         for (const [h, s] of Object.entries(this.data.sessions)) {
             if (s.exp <= t) delete this.data.sessions[h];
-            else if (s.userId === userId) mine.push([h, s]);
+            else if (s.userId === userId && !s.support) mine.push([h, s]);
         }
         mine.sort((a, b) => a[1].exp - b[1].exp);
         while (mine.length >= MAX_SESSIONS) delete this.data.sessions[mine.shift()[0]];
         this.data.sessions[sha(token)] = { userId, exp: t + SESSION_TTL_MS };
         return token;
+    }
+
+    // Режим поддержки: короткая сессия «посмотреть глазами пользователя».
+    // Личная переписка, уведомления и смена данных аккаунта в ней закрыты (см. supportGuard в http.js).
+    async startSupport(key, ttlMs = SUPPORT_TTL_MS) {
+        const u = this.byKey.get(key);
+        if (!u || u.banned) return null;
+        const token = crypto.randomBytes(32).toString('hex');
+        const t = this.now();
+        for (const [h, s] of Object.entries(this.data.sessions)) if (s.exp <= t) delete this.data.sessions[h];
+        this.data.sessions[sha(token)] = { userId: u.id, exp: t + ttlMs, support: true };
+        try { await this.file.save(this.data); } catch (e) { delete this.data.sessions[sha(token)]; return null; }
+        return { token, user: this._public(u), expires: t + ttlMs };
+    }
+
+    isSupport(token) {
+        if (typeof token !== 'string' || token.length !== 64) return false;
+        const s = this.data.sessions[sha(token)];
+        return !!(s && s.support && s.exp > this.now());
     }
 
     async register(rawName, password) {
@@ -169,7 +189,8 @@ class AccountStore {
         if (!s || s.exp <= this.now()) return null;
         const u = this.data.users[s.userId];
         if (!u || u.banned) return null;
-        return this.byId(s.userId);
+        const pub = this.byId(s.userId);
+        return s.support ? Object.assign(pub, { support: true }) : pub;
     }
 
     // ----- модерация -----

@@ -179,6 +179,24 @@ class RequestStore {
         return { ok: true };
     }
 
+    // ---------- для модератора ----------
+    listAll() {
+        return Object.values(this.data.requests).sort((a, b) => b.created - a.created).slice(0, 300)
+            .map(r => ({ ...this._view(r, null), offers: this.offerCount(r.id) }));
+    }
+
+    // Удалить любой запрос (вместе с предложениями к нему)
+    async removeAny(id) {
+        const r = typeof id === 'string' ? this.data.requests[id] : null;
+        if (!r) return fail('REQUEST_NOT_FOUND');
+        const offers = Object.entries(this.data.offers).filter(([, o]) => o.requestId === id);
+        delete this.data.requests[id];
+        for (const [oid] of offers) delete this.data.offers[oid];
+        try { await this.file.save(this.data); }
+        catch (e) { this.data.requests[id] = r; for (const [oid, o] of offers) this.data.offers[oid] = o; return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, ownerId: r.ownerId, ownerName: r.ownerName, title: r.title || '', category: r.category };
+    }
+
     // Включить/выключить уведомления о подходящем жилье по этому запросу
     async setNotify(user, id, on) {
         const r = typeof id === 'string' ? this.data.requests[id] : null;

@@ -56,7 +56,8 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
 
         // Аккаунт определяется по токену, а не по тому, что пишет клиент
         const token = socket.handshake && socket.handshake.auth && socket.handshake.auth.token;
-        const account = accounts && token ? accounts.authenticate(token) : null;
+        const authed = accounts && token ? accounts.authenticate(token) : null;
+        const account = authed && !authed.support ? authed : null;   // режим поддержки: без личных комнат и переписки
         if (account) { socket.join('user:' + account.id); if (notifier) notifier.connected(account.id); }
 
         const state = { joined: new Set(), violations: 0, lastText: '', lastTextAt: 0 };
