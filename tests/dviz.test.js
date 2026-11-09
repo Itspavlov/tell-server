@@ -121,6 +121,7 @@ test('движ: комментарии и отклики, уведомления
     r = res(); await h.dvizGet(req({ headers: as(b), params: { id } }), r);
     assert.equal(r.body.event.joined, true);
     assert.equal(r.body.event.joinList[0].name, 'Борис');
+    assert.deepEqual(r.body.event.joinNames, ['Борис']);
     assert.equal(r.body.event.commentList[0].text, 'Я за! Сколько стоит?');
     r = res(); await h.dvizGet(req({ headers: as(c), params: { id } }), r);
     assert.equal(r.body.event.joined, false);

@@ -87,6 +87,7 @@ class DvizStore {
             created: e.created, title: e.title, text: full ? e.text : e.text.slice(0, 160), place: e.place, coords: e.coords || null, when: e.when, max: e.max,
             thumb: e.thumb || '', photoCount: e.photos.length, attached: e.attached || null,
             comments: e.comments.length, joins: e.joins.length, joined, expires: this._expires(e),
+            joinNames: e.joins.slice(0, 3).map(j => (this.accounts.byId(j.userId) || { name: j.name }).name),
             ...(full ? {
                 photos: e.photos,
                 joinList: e.joins.map(j => ({ userId: j.userId, name: (this.accounts.byId(j.userId) || { name: j.name }).name, time: j.time })),
