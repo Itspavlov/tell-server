@@ -111,6 +111,8 @@ function loadConfig(env = process.env) {
             requestWrite: { windowMs: 60_000, max: 20 },
             reviewWrite: { windowMs: 3_600_000, max: 20 },
             serviceWrite: { windowMs: 3_600_000, max: 30 },
+            dvizWrite: { windowMs: 3_600_000, max: 20 },
+            dvizTalk: { windowMs: 60_000, max: 12 },
             verifyRequest: { windowMs: 3_600_000, max: 5 },
             pushSub: { windowMs: 3_600_000, max: 30 },
             mediaUpload: { windowMs: 3_600_000, max: 30 }

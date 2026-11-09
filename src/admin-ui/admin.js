@@ -111,7 +111,7 @@
     const NAV = [
         ['Главное', [['overview', 'Обзор']]],
         ['Люди', [['verify', 'Верификация'], ['users', 'Пользователи'], ['reports', 'Жалобы']]],
-        ['Контент', [['listings', 'Объявления'], ['requests', 'Ищу / Предлагаю'], ['services', 'Развлечения'], ['reviews', 'Отзывы'], ['chats', 'Чаты']]],
+        ['Контент', [['listings', 'Объявления'], ['requests', 'Ищу / Предлагаю'], ['services', 'Развлечения'], ['dviz', 'Курортный движ'], ['reviews', 'Отзывы'], ['chats', 'Чаты']]],
         ['Сайт', [['weather', 'Погода']]],
         ['Система', [['audit', 'Журнал']]]
     ];
@@ -133,7 +133,7 @@
             el('aside', { class: 'side' }, el('div', { class: 'brand' }, el('span', { class: 'logo' }, 'YG'), el('b', {}, 'Модерация')), nav,
                 el('button', { class: 'btn ghost wide', onclick: () => logout() }, 'Выйти')),
             el('main', { class: 'main' }, el('h2', { class: 'page-title' }, title), body)));
-        const views = { overview: vOverview, verify: vVerify, users: vUsers, chats: vChats, listings: vListings, requests: vRequests, reports: vReports, reviews: vReviews, services: vServices, weather: vWeather, audit: vAudit };
+        const views = { overview: vOverview, verify: vVerify, users: vUsers, chats: vChats, listings: vListings, requests: vRequests, dviz: vDviz, reports: vReports, reviews: vReviews, services: vServices, weather: vWeather, audit: vAudit };
         run(body, views[tab]);
         refreshCounts();
         const on = nav.querySelector('.nav-item.on'); if (on && on.scrollIntoView) on.scrollIntoView({ inline: 'center', block: 'nearest' });
@@ -347,6 +347,20 @@
                 el('button', { class: 'btn bad', onclick: () => guarded('Удалить карточку развлечения?', () => api('DELETE', '/services/' + encodeURIComponent(x.id)), 'Карточка удалена', true, 'Удалить') }, 'Удалить')))));
     }
 
+    // ---------- Курортный движ ----------
+    async function vDviz(body) {
+        const d = await api('GET', '/dviz');
+        if (!d.events.length) { body.replaceChildren(empty('Движей пока нет')); return; }
+        body.replaceChildren(...d.events.map(x => el('div', { class: 'card item' }, initial(x.ownerName),
+            el('div', { class: 'grow' },
+                el('div', { class: 'head' }, el('b', {}, x.title), x.active ? el('span', { class: 'pill ok' }, 'идёт') : el('span', { class: 'pill' }, 'закончился')),
+                el('div', { class: 'mut' }, [x.ownerName, x.when ? x.when.replace('T', ' ') : 'без времени', x.place].filter(Boolean).join(' · ')),
+                el('div', { class: 'mut' }, 'Откликов: ' + x.joins + ' · комментариев: ' + x.comments + ' · фото: ' + x.photos + ' · ' + fmt(x.created))),
+            el('div', { class: 'actions' },
+                el('button', { class: 'btn acc', onclick: () => asUser(x.ownerName) }, 'Войти как'),
+                el('button', { class: 'btn bad', onclick: () => guarded('Удалить движ «' + x.title + '» автора ' + x.ownerName + '?', () => api('DELETE', '/dviz/' + encodeURIComponent(x.id)), 'Движ удалён', true, 'Удалить') }, 'Удалить')))));
+    }
+
     // ---------- Погода в шапке ----------
     async function vWeather(body) {
         const d = await api('GET', '/weather');
@@ -378,7 +392,7 @@
     }
 
     // ---------- Журнал ----------
-    const ACTION = { impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
+    const ACTION = { impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалён движ', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
     async function vAudit(body) {
         const d = await api('GET', '/audit?limit=200');
         if (!d.entries.length) { body.replaceChildren(empty('Журнал пуст')); return; }

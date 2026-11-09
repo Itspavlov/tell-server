@@ -8,7 +8,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { JsonFile } = require('./jsonfile');
-const { normalizeName, normalizeText, fail, CLIENT_ID_RE } = require('./validate');
+const { normalizeName, normalizeText, fail, CLIENT_ID_RE, REACTIONS } = require('./validate');
 const { nameKey } = require('./accounts');
 
 const CONV_CAP = 500;
@@ -70,9 +70,19 @@ class DmStore {
         };
     }
 
-    _view(c, m) {
+    // реакции: { эмодзи: количество } и список «моих» для того, кто смотрит
+    _reacts(m, viewerId) {
+        const reactions = {}, mine = [];
+        for (const e of REACTIONS) {
+            const arr = m.reactions && m.reactions[e];
+            if (Array.isArray(arr) && arr.length) { reactions[e] = arr.length; if (viewerId && arr.includes(viewerId)) mine.push(e); }
+        }
+        return { reactions, mine };
+    }
+
+    _view(c, m, viewerId = null) {
         const u = this.accounts.byId(m.from);
-        return { id: m.id, convId: c.id, from: { id: m.from, name: u ? u.name : 'Гость' }, text: m.text, time: m.time, ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {}), ...(m.photo ? { photo: m.photo } : {}) };
+        return { id: m.id, convId: c.id, from: { id: m.from, name: u ? u.name : 'Гость' }, text: m.text, time: m.time, ...(m.reply ? { reply: m.reply } : {}), ...this._reacts(m, viewerId), ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {}), ...(m.photo ? { photo: m.photo } : {}) };
     }
 
     // Найти или создать диалог гостя с владельцем объявления
@@ -141,7 +151,7 @@ class DmStore {
         let end = vis.length;
         if (before) { const i = vis.findIndex(m => m.id === before); end = i >= 0 ? i : 0; }
         const start = Math.max(0, end - Math.min(limit, 200));
-        return { ok: true, conv: this._summary(user, c), messages: vis.slice(start, end).map(m => this._view(c, m)), hasMore: start > 0 };
+        return { ok: true, conv: this._summary(user, c), messages: vis.slice(start, end).map(m => this._view(c, m, user.id)), hasMore: start > 0 };
     }
 
     // «Удалить у себя»: собеседник свою копию переписки сохраняет
@@ -219,7 +229,7 @@ class DmStore {
     }
 
     // Возвращает { ok, message, recipients: [id аккаунтов] }
-    async send(user, convId, rawText, clientId = null, rawVideo = null, rawVoice = null, rawPhoto = null) {
+    async send(user, convId, rawText, clientId = null, rawVideo = null, rawVoice = null, rawPhoto = null, replyTo = null) {
         const c = this._get(user, convId);
         if (!c) return fail('NO_CONVERSATION');
         if ((rawVideo ? 1 : 0) + (rawVoice ? 1 : 0) + (rawPhoto ? 1 : 0) > 1) return fail('BAD_PAYLOAD');
@@ -254,6 +264,13 @@ class DmStore {
         if (rk && this.recent.has(rk)) return { ok: true, message: this.recent.get(rk), recipients, duplicate: true };
 
         const m = { id: 'dmm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), from: user.id, text: t.value, time: this.now(), ...(video ? { video } : {}), ...(voice ? { voice } : {}), ...(photo ? { photo } : {}) };
+        if (typeof replyTo === 'string' && /^dmm_[\w-]{1,60}$/.test(replyTo)) {
+            const src = c.messages.find(x => x.id === replyTo);
+            if (src) {
+                const su = this.accounts.byId(src.from);
+                m.reply = { id: src.id, user: su ? su.name : 'Гость', text: src.text ? src.text.slice(0, 100) : (src.video ? 'Видеосообщение' : (src.voice ? 'Голосовое сообщение' : '📷 Фото')) };
+            }
+        }
         c.messages.push(m);
         const dropped = [];
         while (c.messages.length > CONV_CAP) dropped.push(c.messages.shift());
@@ -268,6 +285,28 @@ class DmStore {
         const view = this._view(c, m);
         if (rk) { this.recent.set(rk, view); if (this.recent.size > 2000) this.recent.delete(this.recent.keys().next().value); }
         return { ok: true, message: view, recipients };
+    }
+
+    // Реакция-переключатель на сообщение диалога; обоим участникам уходят счётчики и «мои» для каждого
+    async react(user, convId, msgId, emoji) {
+        const c = this._get(user, convId);
+        if (!c) return fail('NO_CONVERSATION');
+        if (!REACTIONS.includes(emoji)) return fail('BAD_REACTION');
+        const m = typeof msgId === 'string' ? this._visible(user, c).find(x => x.id === msgId) : null;
+        if (!m) return fail('MESSAGE_NOT_FOUND');
+        const prev = JSON.stringify(m.reactions || {});
+        if (!m.reactions) m.reactions = {};
+        const arr = Array.isArray(m.reactions[emoji]) ? m.reactions[emoji] : (m.reactions[emoji] = []);
+        const i = arr.indexOf(user.id);
+        if (i >= 0) arr.splice(i, 1); else arr.push(user.id);
+        if (!arr.length) delete m.reactions[emoji];
+        try { await this.file.save(this.data); }
+        catch (e) { m.reactions = JSON.parse(prev); return fail('STORE_UNAVAILABLE'); }
+        const owner = this.accounts.findByKey(c.ownerKey);
+        const ids = [...new Set([c.guestId, owner && owner.id].filter(Boolean))];
+        const byUser = {};
+        for (const id of ids) byUser[id] = this._reacts(m, id);
+        return { ok: true, ...this._reacts(m, user.id), byUser };
     }
 }
 

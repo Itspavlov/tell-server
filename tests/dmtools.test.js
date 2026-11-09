@@ -143,3 +143,41 @@ test('один диалог на пару аккаунтов: встречное
     const again = await call(a.sock, 'dm-open', { ownerName: 'Борис', adId: 'svc_7', adTitle: 'Развлечение: Прогулка' });
     assert.equal(again.conv.id, convId);
 });
+
+test('личные сообщения: ответ на сообщение и реакции обоим участникам', async () => {
+    const env = await setup(); const { a, b, convId } = await pair(env);
+    const first = await call(a.sock, 'dm-send', { convId, text: 'Свободно с 10 июня?' });
+    const re = await call(b.sock, 'dm-send', { convId, text: 'Да, свободно', replyTo: first.id });
+    assert.equal(re.ok, true);
+    let hist = await call(a.sock, 'dm-history', { convId });
+    const m2 = hist.messages[1];
+    assert.equal(m2.reply.id, first.id);
+    assert.equal(m2.reply.user, 'Аня');
+    assert.equal(m2.reply.text, 'Свободно с 10 июня?');
+    // чужой/кривой replyTo игнорируется, сообщение всё равно уходит
+    const odd = await call(b.sock, 'dm-send', { convId, text: 'ещё', replyTo: 'dmm_nope' });
+    assert.equal(odd.ok, true);
+    assert.equal((await call(a.sock, 'dm-history', { convId })).messages[2].reply, undefined);
+
+    // реакция: переключатель, обоим приходит событие с их «моими»
+    const r1 = await call(b.sock, 'dm-react', { convId, id: first.id, emoji: '❤️' });
+    assert.equal(r1.ok, true);
+    assert.deepEqual(r1.reactions, { '❤️': 1 });
+    assert.deepEqual(r1.mine, ['❤️']);
+    const evs = env.io.emitted.filter(e => e.ev === 'dm-reaction');
+    assert.equal(evs.length, 2);
+    assert.deepEqual(evs.find(e => e.room === 'user:' + a.id).payload.mine, []);
+    assert.deepEqual(evs.find(e => e.room === 'user:' + b.id).payload.mine, ['❤️']);
+    hist = await call(a.sock, 'dm-history', { convId });
+    assert.deepEqual(hist.messages[0].reactions, { '❤️': 1 });
+    assert.deepEqual(hist.messages[0].mine, []);
+    const r2 = await call(b.sock, 'dm-react', { convId, id: first.id, emoji: '❤️' });
+    assert.deepEqual(r2.reactions, {});
+    // посторонний, плохой эмодзи и несуществующее сообщение
+    const c = await env.user('Вера');
+    assert.equal((await call(c.sock, 'dm-react', { convId, id: first.id, emoji: '❤️' })).code, 'NO_CONVERSATION');
+    assert.equal((await call(a.sock, 'dm-react', { convId, id: first.id, emoji: '💩' })).code, 'BAD_REACTION');
+    assert.equal((await call(a.sock, 'dm-react', { convId, id: 'dmm_x', emoji: '❤️' })).code, 'MESSAGE_NOT_FOUND');
+    assert.equal((await call(a.sock, 'dm-react', 'x')).code, 'BAD_PAYLOAD');
+    await env.store.close();
+});

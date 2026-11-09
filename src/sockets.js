@@ -23,7 +23,7 @@ const { cleanAd } = require('./groups');
 
 const KNOWN_EVENTS = new Set([
     'join-room', 'leave-room', 'send-message', 'react',
-    'dm-open', 'dm-list', 'dm-history', 'dm-send', 'dm-delete', 'dm-read', 'dm-block', 'dm-report',
+    'dm-open', 'dm-list', 'dm-history', 'dm-send', 'dm-react', 'dm-delete', 'dm-read', 'dm-block', 'dm-report',
     'group-create', 'group-list', 'group-open', 'group-send', 'group-react',
     'group-invite', 'group-join', 'group-leave', 'ad-reactions', 'ad-react'
 ]);
@@ -257,7 +257,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
                 if (!needAuth(ack)) return;
                 if (!rateOk(ack)) return;
                 if (!data || typeof data !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
-                const res = await dms.send(account, data.convId, data.text, data.clientId === undefined ? null : data.clientId, data.video || null, data.voice || null, data.photo || null);
+                const res = await dms.send(account, data.convId, data.text, data.clientId === undefined ? null : data.clientId, data.video || null, data.voice || null, data.photo || null, data.replyTo || null);
                 if (!res.ok) return reply(ack, res);
                 if (!res.duplicate) {
                     for (const id of new Set(res.recipients)) io.to('user:' + id).emit('dm-message', res.message);
@@ -272,6 +272,16 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             try { await fn(...args); }
             catch (e) { logger.error?.(`${name}: ${e && e.message}`); reply(ack, fail('SERVER_ERROR')); }
         };
+
+        socket.on('dm-react', safe('dm-react', async (data, ack) => {
+            if (!needAuth(ack)) return;
+            if (!limiters.reactSocket.hit(socket.id).ok || !limiters.reactIp.hit(ip).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!data || typeof data !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const res = await dms.react(account, data.convId, data.id, data.emoji);
+            if (!res.ok) return reply(ack, res);
+            for (const [uid, v] of Object.entries(res.byUser)) io.to('user:' + uid).emit('dm-reaction', { convId: data.convId, id: data.id, reactions: v.reactions, mine: v.mine });
+            reply(ack, { ok: true, reactions: res.reactions, mine: res.mine });
+        }));
 
         socket.on('dm-delete', safe('dm-delete', async (data, ack) => {
             if (!needAuth(ack)) return;

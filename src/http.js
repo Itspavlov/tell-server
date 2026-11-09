@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -162,6 +162,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
                 requests && requests.renameOwner(u.id, name),
                 reviews && reviews.renameAuthor(u.id, name),
                 services && services.renameOwner(u.id, name),
+                dviz && dviz.renameOwner(u.id, name),
                 store && store.renameUser(r.oldName, name)
             ].filter(Boolean));
             // открытые сессии этого человека получают новое имя сразу
@@ -381,7 +382,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
 
     // В режиме поддержки закрыто всё личное: переписка, уведомления, push, медиа, данные аккаунта.
     // Разрешено смотреть и править объявления, услуги и запросы.
-    const SUPPORT_OK = /^\/(auth\/(me|logout)|profile|my\/stats|weather|favorites|searches|listings|services|requests|reviews)(\/|$)/;
+    const SUPPORT_OK = /^\/(auth\/(me|logout)|profile|my\/stats|weather|favorites|searches|listings|services|dviz|requests|reviews)(\/|$)/;
     const SUPPORT_DENY = /^\/requests\/(matching|[^/]+\/(offers|matches))(\/|$)/;
     async function supportGuard(req, res, next) {
         const t = bearer(req);
@@ -891,6 +892,105 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true });
     }
 
+    // ---------- «Курортный движ» ----------
+    const dvizFail = (res, r) => res.status(
+        r.code === 'DVIZ_NOT_FOUND' || r.code === 'SERVICE_NOT_FOUND' ? 404 : r.code === 'NOT_OWNER' ? 403 : r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL' ? 503 :
+        r.code === 'DVIZ_FULL' || r.code === 'DVIZ_OWN' || r.code === 'TOO_MANY_DVIZ' ? 409 : 400
+    ).json({ ok: false, code: r.code, message: r.message });
+    const viewerOf = (req) => { const t = bearer(req); const u = t && accounts ? accounts.authenticate(t) : null; return u ? u.id : null; };
+
+    function dvizList(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const q = req.query || {};
+        let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
+        if (q.mine === '1') { const me = viewerOf(req); if (!me) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = me; }
+        res.json({ ok: true, events: dviz.list({ viewerId: viewerOf(req), ownerId }) });
+    }
+
+    function dvizGet(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const e = dviz.get(req.params.id, viewerOf(req));
+        if (!e) return dvizFail(res, { code: 'DVIZ_NOT_FOUND', message: 'Этот движ уже закончился или удалён' });
+        res.json({ ok: true, event: e });
+    }
+
+    async function dvizCreate(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.dvizWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await dviz.create(user, req.body);
+        if (!r.ok) return dvizFail(res, r);
+        if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: r.event.id });
+        res.json({ ok: true, event: r.event });
+    }
+
+    async function dvizDelete(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.dvizWrite.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await dviz.remove(user, req.params.id);
+        if (!r.ok) return dvizFail(res, r);
+        if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
+    async function dvizComment(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.dvizTalk.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await dviz.comment(user, req.params.id, req.body && req.body.text);
+        if (!r.ok) return dvizFail(res, r);
+        if (notifier && r.ownerId && r.ownerId !== user.id) notifier.notify([r.ownerId], { kind: 'dviz', title: user.name + ' · ' + trunc(r.title, 40), body: trunc(r.comment.text, 100), open: 'room:dating', tag: 'dviz:' + req.params.id });
+        if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id });
+        res.json({ ok: true, comment: r.comment, comments: r.event.comments });
+    }
+
+    async function dvizCommentDelete(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.dvizTalk.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await dviz.removeComment(user, req.params.id, req.params.cid);
+        if (!r.ok) return dvizFail(res, r);
+        if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id });
+        res.json({ ok: true });
+    }
+
+    async function dvizJoin(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const rl = limiters.dvizTalk.hit(user.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await dviz.toggleJoin(user, req.params.id);
+        if (!r.ok) return dvizFail(res, r);
+        if (r.joined && notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'dviz', title: 'Новый отклик на движ', body: user.name + ' идёт на «' + trunc(r.title, 50) + '»', open: 'room:dating', tag: 'dviz:' + req.params.id });
+        if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id });
+        res.json({ ok: true, joined: r.joined, joins: r.event.joins });
+    }
+
+    async function adminDviz(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_dviz', {}))) return;
+        res.json({ ok: true, events: dviz.listAll() });
+    }
+
+    async function adminDvizDelete(req, res) {
+        if (!dviz) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'delete_dviz', { id: trunc(req.params.id, 40) }))) return;
+        const r = await dviz.remove(null, req.params.id, { admin: true });
+        if (!r.ok) return dvizFail(res, r);
+        await admin.audit('delete_dviz', { id: trunc(req.params.id, 40), owner: trunc(r.event.ownerName, 40), title: trunc(r.event.title, 60), ip: ipOf(req) });
+        if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
     async function listingBump(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const user = needUser(req, res); if (!user) return;
@@ -951,15 +1051,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, stats, searches, media, dms, weather, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -994,6 +1094,8 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/admin/services', h.adminServices);
     app.delete('/api/admin/services/:id', h.adminServiceDelete);
     app.post('/api/admin/impersonate', h.adminImpersonate);
+    app.get('/api/admin/dviz', h.adminDviz);
+    app.delete('/api/admin/dviz/:id', h.adminDvizDelete);
     app.get('/api/admin/requests', h.adminRequests);
     app.delete('/api/admin/requests/:id', h.adminDeleteRequest);
     app.get('/api/admin/audit', h.adminAudit);
@@ -1030,6 +1132,13 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.delete('/api/reviews/:id', h.reviewDelete);
     app.post('/api/listings', express.json({ limit: '5mb' }), h.listingSave);
     app.post('/api/listings/:id/bump', express.json({ limit: '1kb' }), h.listingBump);
+    app.get('/api/dviz', h.dvizList);
+    app.get('/api/dviz/:id', h.dvizGet);
+    app.post('/api/dviz', express.json({ limit: '3mb' }), h.dvizCreate);
+    app.delete('/api/dviz/:id', h.dvizDelete);
+    app.post('/api/dviz/:id/comments', express.json({ limit: '4kb' }), h.dvizComment);
+    app.delete('/api/dviz/:id/comments/:cid', h.dvizCommentDelete);
+    app.post('/api/dviz/:id/join', express.json({ limit: '1kb' }), h.dvizJoin);
     app.get('/api/services', h.servicesList);
     app.get('/api/services/:id', h.serviceGet);
     app.post('/api/services', express.json({ limit: '3mb' }), h.serviceSave);

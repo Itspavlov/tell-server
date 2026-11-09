@@ -73,7 +73,9 @@ function createLimiters(rates, now) {
         mediaUpload: make(rates.mediaUpload),
         requestWrite: make(rates.requestWrite),
         reviewWrite: make(rates.reviewWrite),
-        serviceWrite: make(rates.serviceWrite)
+        serviceWrite: make(rates.serviceWrite),
+        dvizWrite: make(rates.dvizWrite),
+        dvizTalk: make(rates.dvizTalk)
     };
 }
 
