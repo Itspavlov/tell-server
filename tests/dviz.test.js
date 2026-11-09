@@ -51,6 +51,20 @@ test('движ: проверка полей и фото', async () => {
     await store.close();
 });
 
+test('движ: точка сбора на карте', async () => {
+    const { dviz, reg, store } = await setup();
+    const a = await reg('Анна');
+    const ok = await dviz.create(a, DV({ coords: [44.372251234, 38.531349999] }));
+    assert.equal(ok.ok, true);
+    assert.deepEqual(ok.event.coords, [44.37225, 38.53135]);          // округляется до ~1 м
+    assert.deepEqual(dviz.list()[0].coords, [44.37225, 38.53135]);    // и видна в ленте
+    assert.equal((await dviz.create(a, DV({}))).event.coords, null);  // без точки — null
+    for (const bad of [[100, 38], [44, 200], ['44', '38'], [44], [NaN, 1], 'x', { lat: 1 }]) {
+        assert.equal((await dviz.create(a, DV({ coords: bad }))).code, 'BAD_REQUEST', JSON.stringify(bad));
+    }
+    await store.close();
+});
+
 test('движ: не больше 5 активных, лента и срок жизни', async () => {
     const { dviz, reg, clock, store } = await setup();
     const a = await reg('Анна');
