@@ -55,6 +55,16 @@ class AccountStore {
 
     // Аватарка: только id готовой картинки (av01…av35), пустая строка — без аватарки
     avatarOf(id) { const u = this.data.users[id]; return u && u.avatar ? u.avatar : ''; }
+    // Аватарки по именам (для чатов и карточек): имя → id готовой картинки; тем, у кого её нет, места в ответе нет
+    avatarsByNames(names) {
+        const out = {};
+        for (const n of (Array.isArray(names) ? names : []).slice(0, 40)) {
+            if (typeof n !== 'string' || !n || n.length > 40) continue;
+            const u = this.byKey.get(nameKey(n));
+            if (u && u.avatar) out[n] = u.avatar;
+        }
+        return out;
+    }
     async setAvatar(userId, value) {
         const u = this.data.users[userId];
         if (!u) return fail('AUTH_REQUIRED');

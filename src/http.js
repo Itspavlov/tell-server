@@ -178,6 +178,14 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified, avatar: accounts.avatarOf(u.id) } });
     }
 
+    // Аватарки по именам: чтобы везде, где виден человек (чаты, комментарии, карточки), рядом была его картинка
+    function avatarsByNames(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const names = String(req.query.names || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 40);
+        res.set('Cache-Control', 'private, max-age=60');
+        res.json({ ok: true, avatars: accounts.avatarsByNames(names) });
+    }
+
     // Аватарка из готового набора: её видят другие в карточках запросов
     async function setAvatar(req, res) {
         if (!accounts) return res.status(404).json({ error: 'Not found' });
@@ -1078,7 +1086,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -1141,6 +1149,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/auth/avatar', h.setAvatar);
     app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
+    app.get('/api/avatars', h.avatarsByNames);
     app.get('/api/push/key', h.pushKey);
     app.use('/api/push', express.json({ limit: '4kb' }));
     app.post('/api/push/subscribe', h.pushSubscribe);

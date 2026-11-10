@@ -346,6 +346,18 @@ test('аватарка: только из готового набора; вид�
     assert.equal((await accounts.setAvatar('u_nope', 'av01')).code, 'AUTH_REQUIRED');
 });
 
+test('аватарки по именам: регистр и точки не важны, без аватарки — нет в ответе, лишнее отбрасывается', async () => {
+    const { accounts } = await setup();
+    const a = await accounts.register('Аня', PW);
+    const b = await accounts.register('Борис', PW);
+    await accounts.setAvatar(a.user.id, 'av12');
+    assert.deepEqual(accounts.avatarsByNames(['Аня', 'аня', 'Борис', 'Нету', '', 5, 'x'.repeat(50)]), { 'Аня': 'av12', 'аня': 'av12' });
+    assert.deepEqual(accounts.avatarsByNames('нет'), {});
+    const many = Array.from({ length: 80 }, () => 'Аня');
+    assert.ok(Object.keys(accounts.avatarsByNames(many)).length <= 40);
+    assert.equal(b.ok, true);
+});
+
 test('«был в сети»: обновляется не чаще раза в минуту, режим поддержки его не двигает, на диск пишется пачкой', async () => {
     let t = 1_800_000_000_000;
     const { accounts, cfg } = await setup(() => t);
