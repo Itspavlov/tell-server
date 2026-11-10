@@ -175,7 +175,20 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!accounts) return res.status(404).json({ error: 'Not found' });
         const u = accounts.authenticate(bearer(req));
         if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
-        res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified } });
+        res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified, avatar: accounts.avatarOf(u.id) } });
+    }
+
+    // Аватарка из готового набора: её видят другие в карточках запросов
+    async function setAvatar(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.loginIp.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await accounts.setAvatar(u.id, b.avatar);
+        if (!r.ok) return res.status(r.code === 'SERVER_ERROR' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
+        res.json({ ok: true, avatar: r.avatar });
     }
 
     // ---------- push-уведомления ----------
@@ -426,6 +439,19 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         return user || null;
     };
 
+    // Аватарка и «в сети» владельца для карточек: online — открыто приложение, seen — когда последний раз был
+    function withOwner(list) {
+        if (!accounts) return list;
+        const seen = {};
+        list.forEach((r) => {
+            if (!r.ownerId) return;
+            if (!seen[r.ownerId]) seen[r.ownerId] = { avatar: accounts.avatarOf(r.ownerId), online: !!(notifier && notifier.isOnline && notifier.isOnline(r.ownerId)), seen: accounts.lastSeenOf(r.ownerId) };
+            const o = seen[r.ownerId];
+            r.ownerAvatar = o.avatar; r.ownerOnline = o.online; r.ownerSeen = o.seen;
+        });
+        return list;
+    }
+
     function requestsList(req, res) {
         if (!requests) return res.status(404).json({ error: 'Not found' });
         const rl = limiters.history.hit(ipOf(req));
@@ -438,6 +464,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', section: ['housing', 'work', 'trips', 'services'].includes(q.section) ? q.section : '', kind: ['seek', 'offer'].includes(q.kind) ? q.kind : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
         // у своих активных запросов показываем, сколько вариантов найдено и сколько предложений пришло
         if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.similarCount = requests.countSimilar(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
+        withOwner(out);
         res.json({ ok: true, requests: out, cooldown: user ? requests.cooldown(user.id) : 0 });
     }
 
@@ -1051,7 +1078,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -1111,6 +1138,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/auth/login', h.login);
     app.post('/api/auth/logout', h.logout);
     app.post('/api/auth/rename', h.rename);
+    app.post('/api/auth/avatar', h.setAvatar);
     app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
     app.get('/api/push/key', h.pushKey);

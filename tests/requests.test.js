@@ -490,3 +490,24 @@ test('с животными: нужен значок «С животными» �
     assert.equal((await requests.edit(a, q.id, REQ({ pets: false, budget: 3500 }))).request.pets, false);
     await store.close();
 });
+
+test('запросы: у карточки есть аватарка и статус владельца (онлайн / когда был)', async () => {
+    const { requests, reg, accounts, cfg } = await setup();
+    const a = await reg('Анна'), b = await reg('Борис');
+    await accounts.setAvatar(a.id, 'av05');
+    await requests.create(a, REQ());
+    const online = new Set([a.id]);
+    // подменяем уведомитель: Анна «онлайн»
+    const hh = createHandlers({ cfg, store: null, admin: null, accounts, listings: null, requests, limiters: limiters(cfg), io: makeIo(), notifier: { isOnline: (id) => online.has(id), notify() {} }, logger: silent });
+    const r1 = res(); hh.requestsList(req({ headers: { authorization: 'Bearer ' + b.token } }), r1);
+    const x = r1.body.requests[0];
+    assert.equal(x.ownerAvatar, 'av05');
+    assert.equal(x.ownerOnline, true);
+    online.clear();
+    const r2 = res(); hh.requestsList(req({ headers: { authorization: 'Bearer ' + b.token } }), r2);
+    assert.equal(r2.body.requests[0].ownerOnline, false);
+    assert.ok(r2.body.requests[0].ownerSeen > 0);
+    // без аватарки — пустая строка
+    const r3 = res(); hh.requestsList(req({}), r3);
+    assert.equal(typeof r3.body.requests[0].ownerAvatar, 'string');
+});

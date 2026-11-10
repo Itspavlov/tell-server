@@ -102,6 +102,8 @@ async function start(env = process.env, logger = console) {
     const requestSweeper = setInterval(() => requests.sweep().catch(() => {}), 6 * 3600 * 1000);
     requestSweeper.unref();
     // раз в 10 минут: сообщаем, что у запроса закончился срок
+    const seenFlusher = setInterval(() => accounts.flushSeen().catch(() => {}), 5 * 60 * 1000);
+    seenFlusher.unref();
     const expirer = setInterval(() => requests.expireDue().then((list) => list.forEach((x) => notifier.notify([x.ownerId], {
         kind: 'request', title: 'Срок запроса истёк', body: (x.city ? x.city + ': ' : '') + 'можно создать новый запрос', open: 'profile', tag: 'req-exp-' + x.id
     }))).catch(() => {}), 10 * 60 * 1000);

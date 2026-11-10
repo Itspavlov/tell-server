@@ -19,6 +19,8 @@ const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 const SUPPORT_TTL_MS = 30 * 60 * 1000;
 const MAX_SESSIONS = 10;
 const MAX_USERS = 20000;
+const AVATAR_RE = /^av(0[1-9]|[12]\d|3[0-5])$/;      // готовые аватарки av01…av35 (картинки лежат на сайте)
+const SEEN_STEP_MS = 60 * 1000;                         // «был в сети» обновляем не чаще раза в минуту
 const RENAME_COOLDOWN_MS = 24 * 3600 * 1000;   // имя можно менять раз в сутки: чтобы не выдавать себя за других
 
 // Ключ имени: «Тарас», «тарас» и «Т.арас» — один и тот же человек
@@ -50,6 +52,35 @@ class AccountStore {
     findByKey(key) { const u = this.byKey.get(key); return u ? this._public(u) : null; }
     byId(id) { const u = this.data.users[id]; return u ? this._public(u) : null; }
     isNameTaken(key) { return this.byKey.has(key); }
+
+    // Аватарка: только id готовой картинки (av01…av35), пустая строка — без аватарки
+    avatarOf(id) { const u = this.data.users[id]; return u && u.avatar ? u.avatar : ''; }
+    async setAvatar(userId, value) {
+        const u = this.data.users[userId];
+        if (!u) return fail('AUTH_REQUIRED');
+        const v = value == null ? '' : String(value);
+        if (v && !AVATAR_RE.test(v)) return fail('BAD_AVATAR');
+        const prev = u.avatar;
+        if (v) u.avatar = v; else delete u.avatar;
+        try { await this.file.save(this.data); }
+        catch (e) { if (prev === undefined) delete u.avatar; else u.avatar = prev; return fail('SERVER_ERROR'); }
+        return { ok: true, avatar: v };
+    }
+
+    // «Был в сети»: отмечаем действия пользователя в памяти, на диск пишем пачкой (flushSeen)
+    touch(userId, force = false) {
+        const u = this.data.users[userId];
+        if (!u) return;
+        const t = this.now();
+        if (!force && u.lastSeen && t - u.lastSeen < SEEN_STEP_MS) return;
+        u.lastSeen = t; this.seenDirty = true;
+    }
+    lastSeenOf(id) { const u = this.data.users[id]; return u && u.lastSeen ? u.lastSeen : 0; }
+    async flushSeen() {
+        if (!this.seenDirty) return;
+        this.seenDirty = false;
+        try { await this.file.save(this.data); } catch (e) { this.seenDirty = true; }
+    }
     count() { return this.byKey.size; }
 
     async _hash(password, salt) {
@@ -190,6 +221,7 @@ class AccountStore {
         const u = this.data.users[s.userId];
         if (!u || u.banned) return null;
         const pub = this.byId(s.userId);
+        if (!s.support) this.touch(u.id);          // режим поддержки «был в сети» не двигает
         return s.support ? Object.assign(pub, { support: true }) : pub;
     }
 

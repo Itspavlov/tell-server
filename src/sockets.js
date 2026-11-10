@@ -425,6 +425,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
 
         socket.on('disconnect', () => {
             if (account && notifier) notifier.disconnected(account.id);
+            if (account && accounts && accounts.touch) accounts.touch(account.id, true);
             const n = (conns.get(ip) || 1) - 1;
             if (n <= 0) conns.delete(ip); else conns.set(ip, n);
             limiters.msgSocket.delete(socket.id);

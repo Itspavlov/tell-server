@@ -332,3 +332,38 @@ test('смена имени хозяина переносит диалоги и 
     assert.equal(again.conv ? again.conv.id : again.id, opened.conv ? opened.conv.id : opened.id);   // тот же диалог, не новый
     await store.close?.();
 });
+
+test('аватарка: только из готового набора; видна в карточках запросов вместе со статусом «в сети»', async () => {
+    const { accounts } = await setup();
+    const a = await accounts.register('Аня', PW);
+    const id = a.user.id;
+    assert.equal(accounts.avatarOf(id), '');
+    for (const bad of ['av00', 'av36', 'av1', '../x', 'data:image/png;base64,AAAA', 7]) assert.equal((await accounts.setAvatar(id, bad)).code, 'BAD_AVATAR', String(bad));
+    assert.deepEqual(await accounts.setAvatar(id, 'av07'), { ok: true, avatar: 'av07' });
+    assert.equal(accounts.avatarOf(id), 'av07');
+    assert.deepEqual(await accounts.setAvatar(id, ''), { ok: true, avatar: '' });
+    assert.equal(accounts.avatarOf(id), '');
+    assert.equal((await accounts.setAvatar('u_nope', 'av01')).code, 'AUTH_REQUIRED');
+});
+
+test('«был в сети»: обновляется не чаще раза в минуту, режим поддержки его не двигает, на диск пишется пачкой', async () => {
+    let t = 1_800_000_000_000;
+    const { accounts, cfg } = await setup(() => t);
+    const a = await accounts.register('Аня', PW);
+    const id = a.user.id;
+    const token = a.token;
+    accounts.authenticate(token);
+    assert.equal(accounts.lastSeenOf(id), t);
+    t += 30_000; accounts.authenticate(token);
+    assert.equal(accounts.lastSeenOf(id), t - 30_000, 'в пределах минуты не двигается');
+    t += 40_000; accounts.authenticate(token);
+    assert.equal(accounts.lastSeenOf(id), t);
+    t += 5_000; accounts.touch(id, true);
+    assert.equal(accounts.lastSeenOf(id), t, 'при отключении — сразу');
+    const sup = await accounts.startSupport(nameKey('Аня'));
+    t += 120_000; accounts.authenticate(sup.token);
+    assert.equal(accounts.lastSeenOf(id), t - 120_000, 'поддержка не отмечается');
+    await accounts.flushSeen();
+    const again = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await again.init();
+    assert.equal(again.lastSeenOf(id), t - 120_000);
+});
