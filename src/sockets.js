@@ -345,12 +345,12 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             if (!needGroups(ack)) return;
             if (!rateOk(ack)) return;
             if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
-            const res = await groups.send(account, d.groupId, { text: d.text, replyTo: d.replyTo, ad: d.ad, video: d.video || null, voice: d.voice || null, clientId: d.clientId === undefined ? null : d.clientId });
+            const res = await groups.send(account, d.groupId, { text: d.text, replyTo: d.replyTo, ad: d.ad, req: d.req, video: d.video || null, voice: d.voice || null, clientId: d.clientId === undefined ? null : d.clientId });
             if (!res.ok) return reply(ack, res);
             if (!res.duplicate) {
                 tellMembers(res.members, 'group-message', res.message);
                 const g = groups.list(account).find(x => x.id === d.groupId);
-                ping(res.members.filter(id => id !== account.id), { kind: 'group', title: g ? g.name : 'Группа', body: account.name + ': ' + (res.message.text || (res.message.ad ? '🏠 ' + res.message.ad.title : (res.message.video ? 'Видеосообщение' : (res.message.voice ? 'Голосовое сообщение' : '')))), open: 'group:' + d.groupId, tag: 'group:' + d.groupId });
+                ping(res.members.filter(id => id !== account.id), { kind: 'group', title: g ? g.name : 'Группа', body: account.name + ': ' + (res.message.text || (res.message.req ? '🔎 Запрос на жильё: ' + (res.message.req.city || '') : res.message.ad ? '🏠 ' + res.message.ad.title : (res.message.video ? 'Видеосообщение' : (res.message.voice ? 'Голосовое сообщение' : '')))), open: 'group:' + d.groupId, tag: 'group:' + d.groupId });
             }
             reply(ack, { ok: true, id: res.message.id, time: res.message.time, duplicate: !!res.duplicate });
         }));

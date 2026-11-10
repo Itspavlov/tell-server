@@ -54,6 +54,7 @@ async function start(env = process.env, logger = console) {
     const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await listings.init();
     const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger, dayOf: (ts) => dayKey(ts, cfg.limits.serviceTz) });
+    groups.requests = requests;
     await requests.init();
     const inbox = new Inbox({ dataDir: cfg.dataDir, logger });
     await inbox.init();

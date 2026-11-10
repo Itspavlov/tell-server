@@ -189,3 +189,39 @@ test('ответ на объявление в общем чате: цитата 
     assert.deepEqual(m.reply, { id: 'ad_2', user: 'Объявление', text: 'Сдам студию у моря' });
     await store.close();
 });
+
+test('запрос в личной группе: клиент шлёт только id, данные берутся из активного запроса', async () => {
+    const { RequestStore } = require('../src/requests');
+    const { cfg, accounts, groups, user, store } = await setup();
+    const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await requests.init();
+    groups.requests = requests;
+    const a = await user('Аня'), b = await user('Боря');
+    const acc = accounts.authenticate(a.token);
+    const cr = await requests.create(acc, { category: 'guest', city: 'Архипо-Осиповка', dateFrom: '2027-06-15', dateTo: '2027-06-25', guests: 4, budget: 4500, text: 'Ищем гостевой дом у моря' });
+    assert.equal(cr.ok, true, JSON.stringify(cr));
+    const g = (await call(a.sock, 'group-create', { name: 'Хозяева' })).group;
+    // приглашаем Борю
+    assert.equal((await call(a.sock, 'group-invite', { groupId: g.id, name: 'Боря' })).ok, true);
+    const rid = cr.request.id;
+    // подделанные поля игнорируются: берётся то, что в самом запросе
+    const r = await call(b.sock, 'group-send', { groupId: g.id, clientId: 'c_0123456789abcdef', req: { id: rid, city: 'Подделка', text: 'чужой текст', ownerName: 'Взлом' } });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const open = await call(a.sock, 'group-open', { groupId: g.id });
+    const m = open.messages.find(x => x.req);
+    assert.equal(m.req.id, rid);
+    assert.equal(m.req.city, 'Архипо-Осиповка');
+    assert.equal(m.req.ownerName, 'Аня');
+    assert.equal(m.req.text, 'Ищем гостевой дом у моря');
+    assert.equal(m.req.category, 'guest');
+    assert.equal('ownerId' in m.req, false);
+    // несуществующий запрос и неверный id
+    assert.equal((await call(b.sock, 'group-send', { groupId: g.id, req: { id: 'rq_nope' } })).code, 'BAD_PAYLOAD');
+    assert.equal((await call(b.sock, 'group-send', { groupId: g.id, req: { id: '../x' } })).code, 'BAD_PAYLOAD');
+    // и вместе с объявлением нельзя
+    assert.equal((await call(b.sock, 'group-send', { groupId: g.id, req: { id: rid }, ad: AD })).code, 'BAD_PAYLOAD');
+    // закрытый запрос в группу не отправить
+    await requests.setStatus(acc, rid, 'closed');
+    assert.equal((await call(b.sock, 'group-send', { groupId: g.id, req: { id: rid } })).code, 'BAD_PAYLOAD');
+    assert.match(open.group && (await call(a.sock, 'group-list')).groups[0].last.text, /Запрос/);
+    await store.close();
+});

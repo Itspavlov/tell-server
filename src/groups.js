@@ -28,8 +28,9 @@ function cleanAd(ad) {
 }
 
 class GroupStore {
-    constructor({ dataDir, accounts, limits, media = null, now = Date.now, logger = console, fsImpl }) {
+    constructor({ dataDir, accounts, limits, media = null, requests = null, now = Date.now, logger = console, fsImpl }) {
         this.media = media;
+        this.requests = requests;      // для карточек запросов в группе: данные берём из самого запроса, а не от клиента
         this.file = new JsonFile({ file: path.join(dataDir, 'groups.json'), fsImpl });
         this.accounts = accounts;
         this.limits = limits;
@@ -45,6 +46,19 @@ class GroupStore {
         this.data = { groups: d.groups || {} };
         for (const g of Object.values(this.data.groups)) this.byCode.set(g.code, g.id);
         this.logger.info?.(`Группы: ${Object.keys(this.data.groups).length}`);
+    }
+
+    // Карточка запроса в группе: клиент присылает только id, остальное берём из активного запроса
+    _cleanReq(raw) {
+        if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !AD_ID_RE.test(raw.id) || !this.requests) return null;
+        const r = this.requests.data && this.requests.data.requests && this.requests.data.requests[raw.id];
+        if (!r || this.requests._status(r) !== 'active') return null;
+        const owner = this.accounts.byId(r.ownerId);
+        return {
+            id: r.id, section: r.section || 'housing', kind: r.kind || 'seek', category: r.category || '', title: r.title || '',
+            ownerName: owner ? owner.name : (r.ownerName || 'Гость'), city: r.city || '', dateFrom: r.dateFrom || '', dateTo: r.dateTo || '',
+            guests: Number(r.guests) || 0, budget: Number(r.budget) || 0, text: String(r.text || '').slice(0, 300)
+        };
     }
 
     _get(user, id) {
@@ -64,7 +78,7 @@ class GroupStore {
         const last = g.messages[g.messages.length - 1];
         return {
             id: g.id, name: g.name, members: g.members.length, isOwner: g.ownerId === user.id,
-            last: last ? { text: last.ad ? '🏠 ' + last.ad.title : (last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80))), time: last.time, from: (this.accounts.byId(last.from) || { name: '' }).name } : null,
+            last: last ? { text: last.req ? '🔎 Запрос: ' + (last.req.city || 'жильё') : last.ad ? '🏠 ' + last.ad.title : (last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80))), time: last.time, from: (this.accounts.byId(last.from) || { name: '' }).name } : null,
             updated: g.updated
         };
     }
@@ -78,7 +92,7 @@ class GroupStore {
         }
         return {
             id: m.id, groupId: m.groupId, from: { id: m.from, name: u ? u.name : 'Гость' },
-            text: m.text, time: m.time, reply: m.reply || null, ad: m.ad || null, reactions, mine,
+            text: m.text, time: m.time, reply: m.reply || null, ad: m.ad || null, req: m.req || null, reactions, mine,
             ...(m.video ? { video: m.video } : {}), ...(m.voice ? { voice: m.voice } : {})
         };
     }
@@ -119,7 +133,7 @@ class GroupStore {
 
     memberIds(id) { const g = this.data.groups[id]; return g ? [...g.members] : []; }
 
-    async send(user, id, { text, replyTo, ad, clientId, video: rawVideo, voice: rawVoice } = {}) {
+    async send(user, id, { text, replyTo, ad, req: rawReq, clientId, video: rawVideo, voice: rawVoice } = {}) {
         const g = this._get(user, id);
         if (!g) return fail('NO_GROUP');
         let body = '';
@@ -130,6 +144,9 @@ class GroupStore {
         }
         const cardAd = ad ? cleanAd(ad) : null;
         if (ad && !cardAd) return fail('BAD_PAYLOAD');
+        const cardReq = rawReq ? this._cleanReq(rawReq) : null;
+        if (rawReq && !cardReq) return fail('BAD_PAYLOAD');
+        if (cardAd && cardReq) return fail('BAD_PAYLOAD');
         if (rawVideo && rawVoice) return fail('BAD_PAYLOAD');
         let video = null, voice = null;
         if (rawVideo) {
@@ -142,7 +159,7 @@ class GroupStore {
             if (!chk.ok) return fail('BAD_PAYLOAD');
             voice = { id: rawVoice.id, dur: chk.dur };
         }
-        if (!body && !cardAd && !video && !voice) return fail('EMPTY_MESSAGE');
+        if (!body && !cardAd && !cardReq && !video && !voice) return fail('EMPTY_MESSAGE');
         if (clientId !== null && clientId !== undefined && (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId))) return fail('BAD_PAYLOAD');
 
         const rk = clientId ? `${user.id}|${g.id}|${clientId}` : null;
@@ -150,13 +167,14 @@ class GroupStore {
 
         const m = { id: 'gm_' + this.now() + '_' + crypto.randomBytes(5).toString('hex'), groupId: g.id, from: user.id, text: body, time: this.now() };
         if (cardAd) m.ad = cardAd;
+        if (cardReq) m.req = cardReq;
         if (video) m.video = video;
         if (voice) m.voice = voice;
         if (typeof replyTo === 'string' && /^gm_[\w-]{1,60}$/.test(replyTo)) {
             const src = g.messages.find(x => x.id === replyTo);
             if (src) {
                 const su = this.accounts.byId(src.from);
-                m.reply = { id: src.id, user: su ? su.name : 'Гость', text: src.text ? src.text.slice(0, 100) : (src.ad ? '🏠 ' + src.ad.title : (src.video ? 'Видеосообщение' : (src.voice ? 'Голосовое сообщение' : ''))) };
+                m.reply = { id: src.id, user: su ? su.name : 'Гость', text: src.text ? src.text.slice(0, 100) : (src.req ? '🔎 Запрос: ' + (src.req.city || 'жильё') : src.ad ? '🏠 ' + src.ad.title : (src.video ? 'Видеосообщение' : (src.voice ? 'Голосовое сообщение' : ''))) };
             }
         }
         g.messages.push(m);
