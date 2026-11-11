@@ -941,7 +941,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const q = req.query || {};
         let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
         if (q.mine === '1') { const me = viewerOf(req); if (!me) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = me; }
-        res.json({ ok: true, events: dviz.list({ viewerId: viewerOf(req), ownerId }) });
+        res.json({ ok: true, events: withOwner(dviz.list({ viewerId: viewerOf(req), ownerId })) });
     }
 
     function dvizGet(req, res) {

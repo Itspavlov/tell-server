@@ -34,6 +34,13 @@ function cleanService(raw) {
     const unit = UNITS.includes(raw.unit) ? raw.unit : '';
     const price = num(raw.price, 1, 10_000_000);
     if (Number.isNaN(price)) return fail('BAD_REQUEST');
+    const pl = normalizeText(typeof raw.place === 'string' ? raw.place : '', 120); if (!pl.ok) return fail('BAD_REQUEST');
+    let coords = null;
+    if (raw.coords !== undefined && raw.coords !== null) {
+        const c = raw.coords;
+        if (!Array.isArray(c) || c.length !== 2 || !c.every(Number.isFinite) || Math.abs(c[0]) > 90 || Math.abs(c[1]) > 180) return fail('BAD_REQUEST');
+        coords = [Math.round(c[0] * 1e5) / 1e5, Math.round(c[1] * 1e5) / 1e5];
+    }
     const photos = [];
     if (raw.photos !== undefined && !Array.isArray(raw.photos)) return fail('IMAGE_INVALID');
     for (const p of (raw.photos || []).slice(0, MAX_PHOTOS + 1)) {
@@ -45,7 +52,7 @@ function cleanService(raw) {
     let thumb = '';
     if (raw.thumb) { const r = validateImage(raw.thumb, THUMB_BYTES); if (!r.ok) return fail('IMAGE_INVALID'); thumb = r.value; }
     else if (photos[0] && photos[0].length <= Math.ceil(THUMB_BYTES * 4 / 3) + 128) thumb = photos[0];
-    return { ok: true, value: { title: t.value, text: d.value, city: c.value, tag, unit, price, photos, thumb } };
+    return { ok: true, value: { title: t.value, text: d.value, city: c.value, place: pl.value, coords, tag, unit, price, photos, thumb } };
 }
 
 class ServiceStore {
@@ -69,6 +76,7 @@ class ServiceStore {
             id: s.id, ownerId: s.ownerId, ownerName: u ? u.name : s.ownerName, verified: !!(u && u.verified),
             created: s.created, updated: s.updated, title: s.title, text: full ? s.text : s.text.slice(0, 140), city: s.city,
             tag: s.tag, unit: s.unit, price: s.price, thumb: s.thumb || '', photoCount: s.photos.length,
+            place: s.place || '', coords: s.coords || null,
             ...(full ? { photos: s.photos } : {})
         };
     }

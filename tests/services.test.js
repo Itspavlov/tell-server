@@ -111,3 +111,16 @@ test('развлечения: категории «морские прогулк
     assert.equal((await services.save(a, SV({ unit: 'за билет' }))).service.unit, 'за билет');
     await store.close();
 });
+
+test('услуга: точка на карте и «куда подойти» сохраняются, мусор отклоняется', async () => {
+    const { services, reg, store } = await setup();
+    const a = await reg('Вера');
+    const r = await services.save(a, SV({ coords: [44.894612, 37.310099], place: 'Причал №3' }));
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.service.coords, [44.89461, 37.3101]); assert.equal(r.service.place, 'Причал №3');
+    assert.deepEqual(services.list()[0].coords, [44.89461, 37.3101]);                      // точка есть и в списке: кнопка «Карта» без лишнего запроса
+    const none = await services.save(a, SV({ title: 'Без точки' }));
+    assert.equal(none.service.coords, null); assert.equal(none.service.place, '');
+    for (const bad of [[1], ['a', 'b'], [95, 10], [10, 200], 'x', {}]) assert.equal((await services.save(a, SV({ coords: bad }))).ok, false);
+    await store.close();
+});
