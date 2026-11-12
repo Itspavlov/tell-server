@@ -28,6 +28,7 @@ const { DvizStore } = require('./src/dviz');
 const { StatsStore } = require('./src/stats');
 const { SearchStore } = require('./src/searches');
 const { WeatherStore } = require('./src/weather');
+const { InviteStore } = require('./src/invites');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -51,7 +52,8 @@ async function start(env = process.env, logger = console) {
     await groups.init();
     const adReacts = new AdReactions({ dataDir: cfg.dataDir, logger });
     await adReacts.init();
-    const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    // дневной лимит публикаций считает InviteStore (по разделам, с бонусом за друзей); внутренний счётчик объявлений — только страховка
+    const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: { ...cfg.limits, dailyListings: 100 }, logger });
     await listings.init();
     const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger, dayOf: (ts) => dayKey(ts, cfg.limits.serviceTz) });
     groups.requests = requests;
@@ -73,6 +75,8 @@ async function start(env = process.env, logger = console) {
     await searches.init();
     const weather = new WeatherStore({ dataDir: cfg.dataDir, logger });
     await weather.init();
+    const invites = new InviteStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
+    await invites.init();
 
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
     await pushStore.init();
@@ -93,13 +97,15 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);
     sweeper.unref();
     const mediaSweeper = setInterval(() => media.sweep().catch(() => {}), 6 * 3600 * 1000);
     mediaSweeper.unref();
+    const inviteSweeper = setInterval(() => invites.sweep(), 6 * 3600 * 1000);
+    inviteSweeper.unref();
     const requestSweeper = setInterval(() => requests.sweep().catch(() => {}), 6 * 3600 * 1000);
     requestSweeper.unref();
     // раз в 10 минут: сообщаем, что у запроса закончился срок

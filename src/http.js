@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -121,6 +121,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const b = req.body && typeof req.body === 'object' ? req.body : {};
         const r = await accounts.register(b.name, b.password);
         if (!r.ok) return authFail(res, r);
+        // пришёл по ссылке друга: запоминаем, кто пригласил (засчитается, когда новичок опубликует карточку)
+        if (invites && typeof b.ref === 'string') { try { await invites.attach(r.user.id, b.ref); } catch (e) { logger.warn?.(`invites attach: ${e && e.message}`); } }
         res.status(201).json({ ok: true, token: r.token, user: r.user });
     }
 
@@ -430,6 +432,31 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         };
     }
 
+    // ---------- лимиты публикаций и приглашения друзей ----------
+    const SECTION_TITLE = { housing: 'Жильё', work: 'Работа', trips: 'Поездки', services: 'Развлечения' };
+    const sectionOf = (raw) => (['housing', 'work', 'trips', 'services'].includes(raw) ? raw : 'housing');
+    function dailyLimit(res, q) {
+        const more = q.limit < 5 ? '. Пригласите друга: за каждого, кто зарегистрируется и опубликует карточку, лимит растёт на одну в день' : '. Это максимум, новые можно завтра';
+        return res.status(429).json({ ok: false, code: 'DAILY_LIMIT', message: `Сегодня в разделе «${SECTION_TITLE[q.section]}» вы уже опубликовали ${q.used} из ${q.limit}${more}`, quota: q });
+    }
+    // Друг опубликовал первую карточку: тому, кто пригласил, +1 к лимиту
+    async function afterPublish(user) {
+        if (!invites) return;
+        try {
+            const q = await invites.qualify(user.id);
+            if (q && q.counted && notifier) notifier.notify([q.inviterId], { kind: 'invite', title: 'Друг опубликовал карточку', body: user.name + ': ваш лимит публикаций вырос на одну в день', open: 'profile', tag: 'inv-' + user.id });
+        } catch (e) { logger.warn?.(`invites qualify: ${e && e.message}`); }
+    }
+
+    async function invitesMe(req, res) {
+        if (!invites) return res.status(404).json({ error: 'Not found' });
+        const user = needUser(req, res); if (!user) return;
+        const code = await invites.ensureCode(user.id);
+        if (!code) return res.status(503).json({ ok: false, code: 'STORE_UNAVAILABLE', message: 'Попробуйте позже' });
+        const friends = invites.friendsOf(user.id);
+        res.json({ ok: true, code, friends, counted: invites.bonus(user.id), maxFriends: 5, base: 1, cap: 5, limit: invites.limitFor(user.id), quotas: invites.allQuotas(user.id) });
+    }
+
     // ---------- объявления ----------
     const listingFail = (res, r) => res.status(
         r.code === 'LISTING_NOT_FOUND' ? 404 : (r.code === 'NOT_OWNER' || r.code === 'NOT_VERIFIED') ? 403 :
@@ -481,8 +508,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        const hold = invites ? invites.reserve(user.id, sectionOf(req.body && req.body.section)) : null;
+        if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await requests.create(user, req.body);
-        if (!r.ok) return requestFail(res, r);
+        if (!r.ok) { if (hold) hold.undo(); return requestFail(res, r); }
+        if (invites) { await invites.flush(); await afterPublish(user); }
         io.emit('request-changed', { id: r.request.id });
         const found = listings ? requests.countMatches(requests.data.requests[r.request.id], listings) : 0;
         const alike = listings ? requests.countSimilar(requests.data.requests[r.request.id], listings) : 0;
@@ -653,10 +683,14 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
         const rl = limiters.listingSave.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        const isNewAd = !(req.body && typeof req.body.id === 'string' && req.body.id);
+        const hold = invites && isNewAd ? invites.reserve(user.id, 'housing') : null;
+        if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await listings.save(user, req.body);
-        if (!r.ok) return listingFail(res, r);
+        if (!r.ok) { if (hold) hold.undo(); return listingFail(res, r); }
+        if (invites && r.created) { await invites.flush(); await afterPublish(user); }
         io.emit('listing-changed', { id: r.listing.id });
-        res.json({ ok: true, listing: r.listing, quota: r.quota });
+        res.json({ ok: true, listing: r.listing, quota: invites ? invites.quota(user.id, 'housing') : r.quota });
         // подписчикам на поиск: только о новых объявлениях
         if (searches && notifier && r.created) {
             const full = listings.get(r.listing.id);
@@ -686,7 +720,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const user = accounts && accounts.authenticate(bearer(req));
         if (!user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
-        res.json({ ok: true, quota: listings.quota(user.id) });
+        res.json({ ok: true, quota: invites ? invites.quota(user.id, 'housing') : listings.quota(user.id) });
     }
 
     async function listingDelete(req, res) {
@@ -902,8 +936,12 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.serviceWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        const isNewSvc = !(req.body && typeof req.body.id === 'string' && req.body.id);
+        const hold = invites && isNewSvc ? invites.reserve(user.id, 'services') : null;
+        if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await services.save(user, req.body);
-        if (!r.ok) return serviceFail(res, r);
+        if (!r.ok) { if (hold) hold.undo(); return serviceFail(res, r); }
+        if (invites && r.created) { await invites.flush(); await afterPublish(user); }
         res.json({ ok: true, service: r.service, created: r.created });
     }
 
@@ -960,6 +998,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!rl.ok) return limited(res, rl);
         const r = await dviz.create(user, req.body);
         if (!r.ok) return dvizFail(res, r);
+        await afterPublish(user);
         if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: r.event.id });
         res.json({ ok: true, event: r.event });
     }
@@ -1086,15 +1125,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1162,6 +1201,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.delete('/api/searches/:id', h.searchRemove);
     app.get('/api/listings', h.listingsList);
     app.get('/api/listings/quota', h.listingQuota);
+    app.get('/api/invites/me', h.invitesMe);
     app.get('/api/listings/:id', h.listingGet);
     app.get('/api/listings/:id/reviews', h.reviewsList);
     app.post('/api/listings/:id/reviews', express.json({ limit: '4kb' }), h.reviewSave);
