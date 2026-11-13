@@ -78,7 +78,8 @@ function createLimiters(rates, now) {
         dvizTalk: make(rates.dvizTalk),
         reportWrite: make(rates.reportWrite),
         blockWrite: make(rates.blockWrite),
-        accountDelete: make(rates.accountDelete)
+        accountDelete: make(rates.accountDelete),
+        passwordChange: make(rates.passwordChange)
     };
 }
 

@@ -289,6 +289,28 @@ AccountStore.prototype.checkPassword = async function (userId, password) {
     const h = Buffer.from(await this._hash(password, u.salt), 'hex'), b = Buffer.from(u.hash, 'hex');
     return h.length === b.length && crypto.timingSafeEqual(h, b);
 };
+// Смена пароля: нужен текущий пароль; все остальные сессии (другие устройства) закрываются, текущая остаётся.
+AccountStore.prototype.changePassword = async function (userId, oldPassword, newPassword, keepToken) {
+    const u = this.data.users[userId];
+    if (!u) return fail('NO_USER');
+    if (!(await this.checkPassword(userId, oldPassword))) return fail('BAD_CREDENTIALS');
+    const p = validatePassword(newPassword);
+    if (!p.ok) return p;
+    if (newPassword === oldPassword) return fail('SAME_PASSWORD');
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = await this._hash(newPassword, salt);
+    const prev = { salt: u.salt, hash: u.hash }, prevSessions = { ...this.data.sessions };
+    u.salt = salt; u.hash = hash;
+    const keep = typeof keepToken === 'string' && keepToken.length === 64 ? sha(keepToken) : null;
+    for (const [h, s] of Object.entries(this.data.sessions)) if (s.userId === userId && h !== keep) delete this.data.sessions[h];
+    try { await this.file.save(this.data); }
+    catch (e) {
+        u.salt = prev.salt; u.hash = prev.hash; this.data.sessions = prevSessions;
+        this.logger.error?.(`Пароль не сохранён: ${e.code || e.message}`);
+        return fail('SERVER_ERROR');
+    }
+    return { ok: true };
+};
 // Аккаунт и все его сессии удаляются; имя снова свободно
 AccountStore.prototype.removeUser = async function (userId) {
     const u = this.data.users[userId];

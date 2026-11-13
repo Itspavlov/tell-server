@@ -432,7 +432,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
                 ['media', () => media && media.eraseUser(u.id)],
                 ['dms', () => dms && dms.eraseUser(u)],
                 ['groups', () => groups && groups.eraseUser(u.id)],
-                ['reactions', () => adReacts && adReacts.eraseUser(u.id)]
+                ['reactions', () => adReacts && adReacts.eraseUser(u.id)],
+                ['reports', () => reports && reports.eraseUser(u.id)]
             ];
             for (const [name, fn] of steps) { const r = fn(); if (r) done[name] = await r; }
             const r = await accounts.removeUser(u.id);
@@ -443,6 +444,25 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         }
         if (io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
         logger.info?.(`Аккаунт удалён пользователем: ${u.id}`);
+        res.json({ ok: true });
+    }
+
+    // ---------- смена пароля ----------
+    async function passwordChange(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const token = bearer(req);
+        const u = accounts.authenticate(token);
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.passwordChange.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await accounts.changePassword(u.id, b.oldPassword, b.newPassword, token);
+        if (!r.ok) {
+            if (r.code === 'BAD_CREDENTIALS') return res.status(401).json({ ok: false, code: r.code, message: 'Текущий пароль не подходит' });
+            return res.status(r.code === 'BAD_PASSWORD' || r.code === 'SAME_PASSWORD' ? 400 : 503).json(r);
+        }
+        if (io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
+        logger.info?.(`Пароль изменён: ${u.id}`);
         res.json({ ok: true });
     }
 
@@ -474,7 +494,9 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const b = req.body && typeof req.body === 'object' ? req.body : {};
         const target = reportTarget(b.kind, typeof b.targetId === 'string' ? b.targetId : '', b.room);
         if (!target) return res.status(404).json({ ok: false, code: 'TARGET_NOT_FOUND', message: 'Материал уже удалён или не найден' });
-        const r = await reports.create(u, b, target);
+        const created = accounts.data && accounts.data.users && accounts.data.users[u.id] && accounts.data.users[u.id].createdAt;
+        const trusted = !created || ((typeof accounts.now === 'function' ? accounts.now() : Date.now()) - created) >= 24 * 3600 * 1000;
+        const r = await reports.create(u, b, target, { trusted });
         if (!r.ok) return res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : (r.code === 'REPORT_DUPLICATE' ? 409 : 400)).json(r);
         res.status(201).json({ ok: true, id: r.id });
     }
@@ -502,7 +524,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
     async function adminContentReports(req, res) {
         if (!reports) return res.status(404).json({ error: 'Not found' });
         if (!(await requireAdmin(req, res, 'view_content_reports', {}))) return;
-        res.json({ ok: true, reports: reports.list({ status: req.query && req.query.status === 'all' ? 'all' : 'open' }) });
+        const list = reports.list({ status: req.query && req.query.status === 'all' ? 'all' : 'open' }).map(r => ({ ...r, openCount: reports.openCount(r.kind, r.targetId), hidden: reports.isHidden(r.kind, r.targetId) }));
+        res.json({ ok: true, reports: list });
     }
 
     async function adminContentReportClose(req, res) {
@@ -599,6 +622,18 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         return list;
     }
 
+    // Автоскрытие по жалобам: скрытое видно только владельцу (и модератору в админке)
+    function hideFor(kind, items, viewerId) {
+        if (!reports || !items.length) return items;
+        const hid = reports.hiddenIds(kind);
+        if (!hid.size) return items;
+        const me = viewerId === undefined ? null : viewerId;
+        return items.filter(x => !hid.has(x.id) || (me && x.ownerId === me));
+    }
+    function hiddenFrom(kind, item, viewerId) {
+        return !!(reports && item && reports.isHidden(kind, item.id) && !(viewerId && item.ownerId === viewerId));
+    }
+
     function requestsList(req, res) {
         if (!requests) return res.status(404).json({ error: 'Not found' });
         const rl = limiters.history.hit(ipOf(req));
@@ -611,8 +646,9 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const out = requests.list({ viewerId: user ? user.id : null, status, category: typeof q.category === 'string' ? q.category : '', section: ['housing', 'work', 'trips', 'services'].includes(q.section) ? q.section : '', kind: ['seek', 'offer'].includes(q.kind) ? q.kind : '', city: typeof q.city === 'string' ? q.city.slice(0, 60) : '', mine });
         // у своих активных запросов показываем, сколько вариантов найдено и сколько предложений пришло
         if (user && listings) out.forEach(r => { if (r.mine && r.status === 'active') { r.matchCount = requests.countMatches(requests.data.requests[r.id], listings); r.similarCount = requests.countSimilar(requests.data.requests[r.id], listings); r.offerCount = requests.offerCount(r.id); } });
-        withOwner(out);
-        res.json({ ok: true, requests: out, cooldown: user ? requests.cooldown(user.id) : 0 });
+        const shown = mine ? out : hideFor('request', out, user ? user.id : null);
+        withOwner(shown);
+        res.json({ ok: true, requests: shown, cooldown: user ? requests.cooldown(user.id) : 0 });
     }
 
     async function requestCreate(req, res) {
@@ -773,7 +809,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const r = limiters.history.hit(ipOf(req));
         if (!r.ok) return limited(res, r);
-        res.json({ ok: true, listings: listings.list() });
+        res.json({ ok: true, listings: hideFor('listing', listings.list(), reports && reports.hiddenIds('listing').size ? viewerOf(req) : null) });
     }
 
     function listingGet(req, res) {
@@ -781,7 +817,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = limiters.history.hit(ipOf(req));
         if (!r.ok) return limited(res, r);
         const l = listings.get(req.params.id);
-        if (!l) return res.status(404).json({ ok: false, code: 'LISTING_NOT_FOUND' });
+        if (!l || hiddenFrom('listing', l, reports && reports.isHidden('listing', l.id) ? viewerOf(req) : null)) return res.status(404).json({ ok: false, code: 'LISTING_NOT_FOUND' });
         if (stats) {
             const viewer = accounts && accounts.authenticate(bearer(req));
             if (!viewer || viewer.id !== l.ownerId) stats.view(l.id, viewer ? viewer.id : 'ip:' + ipOf(req));
@@ -1031,7 +1067,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const mine = q.mine === '1' || q.mine === 'true';
         let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
         if (mine) { const u = accounts && accounts.authenticate(bearer(req)); if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = u.id; }
-        res.json({ ok: true, services: services.list({ ownerId }) });
+        const sl = services.list({ ownerId });
+        res.json({ ok: true, services: mine ? sl : hideFor('service', sl, reports && reports.hiddenIds('service').size ? viewerOf(req) : null) });
     }
 
     function serviceGet(req, res) {
@@ -1039,7 +1076,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.history.hit(ipOf(req));
         if (!rl.ok) return limited(res, rl);
         const s = services.get(req.params.id);
-        if (!s) return serviceFail(res, { code: 'SERVICE_NOT_FOUND', message: 'Карточка не найдена' });
+        if (!s || hiddenFrom('service', s, reports && reports.isHidden('service', s.id) ? viewerOf(req) : null)) return serviceFail(res, { code: 'SERVICE_NOT_FOUND', message: 'Карточка не найдена' });
         res.json({ ok: true, service: s });
     }
 
@@ -1091,7 +1128,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const q = req.query || {};
         let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
         if (q.mine === '1') { const me = viewerOf(req); if (!me) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = me; }
-        res.json({ ok: true, events: withOwner(dviz.list({ viewerId: viewerOf(req), ownerId })) });
+        const me = viewerOf(req);
+        res.json({ ok: true, events: withOwner(q.mine === '1' ? dviz.list({ viewerId: me, ownerId }) : hideFor('dviz', dviz.list({ viewerId: me, ownerId }), me)) });
     }
 
     function dvizGet(req, res) {
@@ -1099,7 +1137,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.history.hit(ipOf(req));
         if (!rl.ok) return limited(res, rl);
         const e = dviz.get(req.params.id, viewerOf(req));
-        if (!e) return dvizFail(res, { code: 'DVIZ_NOT_FOUND', message: 'Этот движ уже закончился или удалён' });
+        if (!e || hiddenFrom('dviz', e, reports && reports.isHidden('dviz', e.id) ? viewerOf(req) : null)) return dvizFail(res, { code: 'DVIZ_NOT_FOUND', message: 'Этот движ уже закончился или удалён' });
         res.json({ ok: true, event: e });
     }
 
@@ -1237,7 +1275,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { accountDelete, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { accountDelete, passwordChange, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -1301,6 +1339,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
     app.delete('/api/auth/account', express.json({ limit: '1kb' }), h.accountDelete);
+    app.post('/api/auth/password', express.json({ limit: '1kb' }), h.passwordChange);
     app.post('/api/reports', express.json({ limit: '2kb' }), h.reportCreate);
     app.get('/api/blocks', h.blocksList);
     app.post('/api/blocks', express.json({ limit: '1kb' }), h.blockSet);

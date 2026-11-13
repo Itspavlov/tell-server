@@ -313,7 +313,7 @@
         if (!d.reports.length && !c.reports.length) { body.replaceChildren(empty('Новых жалоб нет')); return; }
         const content = c.reports.map(r => el('div', { class: 'card item top' },
             el('div', { class: 'grow' },
-                el('div', { class: 'head' }, el('b', {}, (KIND_RU[r.kind] || r.kind) + (r.ownerName ? ' · ' + r.ownerName : '')), el('span', { class: 'pill bad' }, REASONS[r.reason] || r.reason), el('span', { class: 'mut' }, fmt(r.time))),
+                el('div', { class: 'head' }, el('b', {}, (KIND_RU[r.kind] || r.kind) + (r.ownerName ? ' · ' + r.ownerName : '')), el('span', { class: 'pill bad' }, REASONS[r.reason] || r.reason), r.hidden ? el('span', { class: 'pill bad' }, 'скрыто автоматически · ' + r.openCount + ' жалоб') : (r.openCount > 1 ? el('span', { class: 'pill' }, r.openCount + ' жалоб') : null), el('span', { class: 'mut' }, fmt(r.time))),
                 r.title ? el('div', { class: 'msg' }, r.title) : null,
                 r.text ? el('div', { class: 'msg' }, 'Комментарий: ' + r.text) : null,
                 el('div', { class: 'mut gap' }, 'Пожаловался: ' + r.reporterName + ' · id: ' + r.targetId)),

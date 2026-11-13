@@ -79,7 +79,7 @@ async function start(env = process.env, logger = console) {
     const invites = new InviteStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await invites.init();
 
-    const reports = new ReportStore({ dataDir: cfg.dataDir, logger });
+    const reports = new ReportStore({ dataDir: cfg.dataDir, logger, hideAt: cfg.reportHideAt });
     await reports.init();
 
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
@@ -124,8 +124,8 @@ async function start(env = process.env, logger = console) {
     const weatherTimer = setInterval(() => weather.refresh().catch(() => {}), 30 * 60 * 1000);
     weatherTimer.unref();
 
-    await new Promise((resolve) => server.listen(cfg.port, resolve));
-    logger.info(`Tell Server v2 запущен на порту ${cfg.port}. Админ-доступ: ${admin.isEnabled() ? 'включён' : 'ВЫКЛЮЧЕН (ADMIN_TOKEN не задан)'}`);
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(cfg.port, cfg.listenHost, resolve); });
+    logger.info(`Tell Server v2 запущен на ${cfg.listenHost}:${cfg.port}. Админ-доступ: ${admin.isEnabled() ? 'включён' : 'ВЫКЛЮЧЕН (ADMIN_TOKEN не задан)'}`);
 
     let closing = false;
     async function shutdown(signal) {
@@ -148,6 +148,10 @@ async function start(env = process.env, logger = console) {
     }
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
+    // Неожиданная ошибка: пишем в журнал и перезапускаемся с сохранением данных, а не остаёмся в неопределённом состоянии.
+    process.on('uncaughtException', (e) => { logger.error(`uncaughtException: ${(e && e.stack) || e}`); shutdown('uncaughtException'); });
+    // Отклонённый промис одного запроса не должен ронять сервер для всех: фиксируем и работаем дальше.
+    process.on('unhandledRejection', (e) => { logger.error(`unhandledRejection: ${(e && e.stack) || e}`); });
 
     return { server, io, store, cfg };
 }

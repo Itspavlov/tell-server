@@ -219,3 +219,116 @@ test('регистрация с согласием: время и версия �
     assert.equal(r2.code, 201); assert.equal(s.accounts.data.users[r2.body.user.id].consent, undefined, 'старые клиенты без согласия не ломаются');
     await s.store.close();
 });
+
+test('смена пароля: нужен текущий, другие устройства выходят, текущее остаётся, старый пароль не работает', async () => {
+    const s = await setup();
+    const A = await s.reg('Анна');
+    const other = (await s.accounts.login('Анна', PW)).token;       // второе устройство
+    const set = async (tok, body) => { const r = res(); await s.h.passwordChange(rq(tok, { body }), r); return r; };
+    assert.equal((await set(null, { oldPassword: PW, newPassword: 'новый пароль 77' })).code, 401);
+    let r = await set(A.token, { oldPassword: 'не тот пароль 1', newPassword: 'новый пароль 77' });
+    assert.equal(r.code, 401); assert.equal(r.body.message, 'Текущий пароль не подходит');
+    assert.equal((await set(A.token, { oldPassword: PW, newPassword: 'коротко' })).code, 400, 'короткий новый пароль');
+    assert.equal((await set(A.token, { oldPassword: PW, newPassword: PW })).code, 400, 'такой же не годится');
+    assert.ok(s.accounts.authenticate(other), 'до смены второе устройство в сети');
+    r = await set(A.token, { oldPassword: PW, newPassword: 'новый пароль 77' });
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.ok(s.accounts.authenticate(A.token), 'текущая сессия жива');
+    assert.equal(s.accounts.authenticate(other), null, 'другое устройство вышло');
+    assert.equal((await s.accounts.login('Анна', PW)).ok, false, 'старый пароль не работает');
+    assert.equal((await s.accounts.login('Анна', 'новый пароль 77')).ok, true);
+    // после перезапуска тоже
+    const again = new AccountStore({ dataDir: s.d, limits: s.cfg.limits, logger: silent }); await again.init();
+    assert.equal((await again.login('Анна', 'новый пароль 77')).ok, true);
+    // режим поддержки: смена пароля закрыта
+    const sup = await s.accounts.startSupport(nameKey('Анна'));
+    const g = res(); await s.h.supportGuard(rq(sup.token, { path: '/auth/password' }), g, () => { throw new Error('не должно пройти'); });
+    assert.equal(g.code, 403);
+    await s.store.close();
+});
+
+test('смена пароля: сбой записи — старый пароль остаётся', async () => {
+    const s = await setup();
+    const A = await s.reg('Анна');
+    const orig = s.accounts.file.save;
+    s.accounts.file.save = async () => { throw new Error('диск'); };
+    const r = res(); await s.h.passwordChange(rq(A.token, { body: { oldPassword: PW, newPassword: 'новый пароль 77' } }), r);
+    assert.equal(r.code, 503);
+    s.accounts.file.save = orig;
+    assert.equal((await s.accounts.login('Анна', PW)).ok, true, 'старый пароль цел');
+    assert.equal((await s.accounts.login('Анна', 'новый пароль 77')).ok, false);
+    await s.store.close();
+});
+
+test('автоскрытие: три разные жалобы скрывают материал везде, владелец видит, модератор возвращает', async () => {
+    const s = await setup();
+    const O = await s.reg('Олег', true);
+    const R = [await s.reg('Рита'), await s.reg('Сеня'), await s.reg('Таня'), await s.reg('Ури')];
+    for (const x of R) s.accounts.data.users[x.id].createdAt = s.clock.t - 3 * 86400000;    // аккаунты старше суток
+    const lid = (await s.listings.save(O, { ad: AD(), profile: {} })).listing.id;
+    const sid = (await s.services.save(O, SV())).service.id;
+    const did = (await s.dviz.create(O, DV())).event.id;
+    const qid = (await s.requests.create(O, REQ())).request.id;
+    const rep = async (u, kind, id) => { const r = res(); await s.h.reportCreate(rq(u.token, { body: { kind, targetId: id, reason: 'spam' } }), r); return r.code; };
+    const seen = async (kind, who) => {
+        const t = who && who.token;
+        const l = res(); s.h.listingsList(rq(t), l);
+        const sl = res(); s.h.servicesList(rq(t), sl);
+        const dl = res(); s.h.dvizList(rq(t), dl);
+        const rl = res(); s.h.requestsList(rq(t), rl);
+        return { l: l.body.listings.length, s: sl.body.services.length, d: dl.body.events.length, r: rl.body.requests.length };
+    };
+    assert.deepEqual(await seen(null, null), { l: 1, s: 1, d: 1, r: 1 });
+    for (const [kind, id] of [['listing', lid], ['service', sid], ['dviz', did], ['request', qid]]) {
+        assert.equal(await rep(R[0], kind, id), 201); assert.equal(await rep(R[1], kind, id), 201);
+    }
+    assert.deepEqual(await seen(null, null), { l: 1, s: 1, d: 1, r: 1 }, 'двух жалоб мало');
+    for (const [kind, id] of [['listing', lid], ['service', sid], ['dviz', did], ['request', qid]]) assert.equal(await rep(R[2], kind, id), 201);
+    assert.deepEqual(await seen(null, null), { l: 0, s: 0, d: 0, r: 0 }, 'скрыто для гостей');
+    assert.deepEqual(await seen(null, R[3]), { l: 0, s: 0, d: 0, r: 0 }, 'скрыто для других');
+    assert.deepEqual(await seen(null, O), { l: 1, s: 1, d: 1, r: 1 }, 'владелец видит своё');
+    // карточки по прямой ссылке
+    const g1 = res(); s.h.listingGet(rq(null, { params: { id: lid } }), g1); assert.equal(g1.code, 404);
+    const g2 = res(); s.h.serviceGet(rq(null, { params: { id: sid } }), g2); assert.equal(g2.code, 404);
+    const g3 = res(); s.h.dvizGet(rq(null, { params: { id: did } }), g3); assert.equal(g3.code, 404);
+    const g4 = res(); s.h.listingGet(rq(O.token, { params: { id: lid } }), g4); assert.equal(g4.code, 200, 'владельцу карточка открывается');
+    // модератор видит счётчик и признак скрытия
+    const adm = { authorization: 'Bearer ' + TOKEN };
+    let a = res(); await s.h.adminContentReports(rq(null, { headers: adm }), a);
+    const row = a.body.reports.find(x => x.kind === 'listing'); assert.equal(row.hidden, true); assert.equal(row.openCount, 3);
+    // закрыл жалобы на объявление — оно возвращается
+    for (const x of a.body.reports.filter(x => x.kind === 'listing')) { const c = res(); await s.h.adminContentReportClose(rq(null, { headers: adm, params: { id: x.id }, body: {} }), c); assert.equal(c.code, 200); }
+    assert.equal((await seen(null, null)).l, 1, 'объявление снова видно');
+    assert.equal((await seen(null, null)).s, 0, 'остальные пока скрыты');
+    await s.store.close();
+});
+
+test('автоскрытие: одна и та же жалоба и «свежие» аккаунты скрыть не могут', async () => {
+    const s = await setup();
+    const O = await s.reg('Олег', true);
+    const fresh = [await s.reg('Рита'), await s.reg('Сеня'), await s.reg('Таня')];        // зарегистрированы только что
+    const lid = (await s.listings.save(O, { ad: AD(), profile: {} })).listing.id;
+    for (const x of fresh) { const r = res(); await s.h.reportCreate(rq(x.token, { body: { kind: 'listing', targetId: lid, reason: 'spam' } }), r); assert.equal(r.code, 201); }
+    const l = res(); s.h.listingsList(rq(null), l);
+    assert.equal(l.body.listings.length, 1, 'три только что созданных аккаунта объявление не скрывают');
+    assert.equal(s.reports.openCount('listing', lid), 0);
+    // порог выключен
+    const off = new ReportStore({ dataDir: s.d + '/off', logger: silent, hideAt: 0 }); await off.init();
+    assert.equal(off.hiddenIds('listing').size, 0);
+    await s.store.close();
+});
+
+test('удаление аккаунта стирает жалобы, поданные им и на него', async () => {
+    const s = await setup();
+    const A = await s.reg('Анна', true), B = await s.reg('Борис', true), C = await s.reg('Вера', true);
+    const lb = (await s.listings.save(B, { ad: AD(), profile: {} })).listing.id;
+    const lc = (await s.listings.save(C, { ad: AD(), profile: {} })).listing.id;
+    const rep = async (u, id) => { const r = res(); await s.h.reportCreate(rq(u.token, { body: { kind: 'listing', targetId: id, reason: 'spam' } }), r); return r.code; };
+    assert.equal(await rep(A, lb), 201); assert.equal(await rep(A, lc), 201); assert.equal(await rep(C, lb), 201);
+    assert.equal(s.reports.list({ status: 'all' }).length, 3);
+    const r = res(); await s.h.accountDelete(rq(A.token, { body: { password: PW } }), r); assert.equal(r.code, 200);
+    const left = s.reports.list({ status: 'all' });
+    assert.equal(left.length, 1, 'остались только жалобы Веры на Бориса');
+    assert.equal(left[0].reporterName, 'Вера');
+    await s.store.close();
+});

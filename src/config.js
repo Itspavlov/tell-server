@@ -63,6 +63,10 @@ function loadConfig(env = process.env) {
         allowNoOrigin: env.ALLOW_NO_ORIGIN === 'true' || (!isProd && env.ALLOW_NO_ORIGIN !== 'false'),
         // Render стоит за прокси: берём IP, который дописал сам прокси
         trustProxy: env.TRUST_PROXY !== 'false',
+        // 127.0.0.1 — слушать только локально (за nginx). По умолчанию как раньше: все интерфейсы.
+        listenHost: env.LISTEN_HOST || '0.0.0.0',
+        // сколько разных людей должны пожаловаться, чтобы материал скрылся до проверки (0 — отключить)
+        reportHideAt: intEnv(env, 'REPORT_HIDE_AT', 3, 0, 50),
         dataDir: env.DATA_DIR ? path.resolve(env.DATA_DIR) : path.join(__dirname, '..', 'data'),
         adminToken,
         vapid: Object.freeze({ publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || '' }),
@@ -118,7 +122,8 @@ function loadConfig(env = process.env) {
             mediaUpload: { windowMs: 3_600_000, max: 30 },
             reportWrite: { windowMs: 3_600_000, max: 30 },
             blockWrite: { windowMs: 3_600_000, max: 60 },
-            accountDelete: { windowMs: 3_600_000, max: 5 }
+            accountDelete: { windowMs: 3_600_000, max: 5 },
+            passwordChange: { windowMs: 3_600_000, max: 10 }
         })
     });
 }
