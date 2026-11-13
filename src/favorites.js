@@ -45,4 +45,12 @@ class FavoriteStore {
     }
 }
 
+FavoriteStore.prototype.eraseUser = async function (userId) {
+    const prev = this.data.users[userId];
+    if (prev === undefined) return 0;
+    delete this.data.users[userId];
+    try { await this.file.save(this.data); } catch (e) { this.data.users[userId] = prev; throw e; }
+    return prev.length;
+};
+
 module.exports = { FavoriteStore };

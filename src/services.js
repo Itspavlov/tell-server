@@ -154,4 +154,15 @@ class ServiceStore {
     }
 }
 
+// Удаление карточек развлечений пользователя (при удалении аккаунта)
+ServiceStore.prototype.eraseUser = async function (userId) {
+    const gone = Object.values(this.data.items).filter(s => s.ownerId === userId);
+    if (!gone.length) return 0;
+    for (const s of gone) delete this.data.items[s.id];
+    try { await this.file.save(this.data); }
+    catch (e) { for (const s of gone) this.data.items[s.id] = s; throw e; }
+    if (typeof this.bytes === 'number') this.bytes = JSON.stringify(this.data).length;
+    return gone.length;
+};
+
 module.exports = { ServiceStore, cleanService, TAGS, UNITS };

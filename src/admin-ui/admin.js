@@ -141,8 +141,8 @@
     // бейджи в меню считаются отдельно, чтобы видеть новое, не открывая вкладку
     async function refreshCounts() {
         try {
-            const [v, r] = await Promise.all([api('GET', '/verify-requests'), api('GET', '/reports')]);
-            const nv = v.requests.length, nr = r.reports.length;
+            const [v, r, cr] = await Promise.all([api('GET', '/verify-requests'), api('GET', '/reports'), api('GET', '/content-reports')]);
+            const nv = v.requests.length, nr = r.reports.length + cr.reports.length;
             if (nv !== counts.verify || nr !== counts.reports) {
                 counts.verify = nv; counts.reports = nr;
                 renderBadges();
@@ -304,13 +304,23 @@
         draw();
     }
 
-    // ---------- Жалобы на личные сообщения ----------
-    const REASONS = { spam: 'Спам', scam: 'Мошенничество', abuse: 'Оскорбления', other: 'Другое' };
+    // ---------- Жалобы: на материалы (объявления, услуги, движ, запросы, сообщения, профили) и на личные сообщения ----------
+    const REASONS = { spam: 'Спам', scam: 'Мошенничество', abuse: 'Оскорбления', adult: 'Неприемлемое', other: 'Другое' };
+    const KIND_RU = { listing: 'Объявление', request: 'Запрос «Ищу»', dviz: 'Движ', service: 'Услуга', review: 'Отзыв', message: 'Сообщение в комнате', user: 'Профиль' };
     async function vReports(body) {
-        const d = await api('GET', '/reports');
-        counts.reports = d.reports.length; renderBadges();
-        if (!d.reports.length) { body.replaceChildren(empty('Новых жалоб нет')); return; }
-        body.replaceChildren(...d.reports.map(r => el('div', { class: 'card item top' },
+        const [d, c] = await Promise.all([api('GET', '/reports'), api('GET', '/content-reports')]);
+        counts.reports = d.reports.length + c.reports.length; renderBadges();
+        if (!d.reports.length && !c.reports.length) { body.replaceChildren(empty('Новых жалоб нет')); return; }
+        const content = c.reports.map(r => el('div', { class: 'card item top' },
+            el('div', { class: 'grow' },
+                el('div', { class: 'head' }, el('b', {}, (KIND_RU[r.kind] || r.kind) + (r.ownerName ? ' · ' + r.ownerName : '')), el('span', { class: 'pill bad' }, REASONS[r.reason] || r.reason), el('span', { class: 'mut' }, fmt(r.time))),
+                r.title ? el('div', { class: 'msg' }, r.title) : null,
+                r.text ? el('div', { class: 'msg' }, 'Комментарий: ' + r.text) : null,
+                el('div', { class: 'mut gap' }, 'Пожаловался: ' + r.reporterName + ' · id: ' + r.targetId)),
+            el('div', { class: 'actions' },
+                r.ownerName ? el('button', { class: 'btn bad', onclick: () => guarded('Заблокировать «' + r.ownerName + '»?', () => api('POST', '/ban', { name: r.ownerName, banned: true }), 'Заблокирован', false, 'Заблокировать') }, 'Заблокировать автора') : null,
+                el('button', { class: 'btn ok', onclick: () => act(() => api('POST', '/content-reports/' + encodeURIComponent(r.id) + '/close', { note: 'разобрано' }), 'Жалоба закрыта', true) }, 'Закрыть'))));
+        const dm = d.reports.map(r => el('div', { class: 'card item top' },
             el('div', { class: 'grow' },
                 el('div', { class: 'head' }, el('b', {}, r.reporter + ' → ' + r.target), el('span', { class: 'pill bad' }, REASONS[r.reason] || r.reason), el('span', { class: 'mut' }, fmt(r.time))),
                 r.text ? el('div', { class: 'msg' }, r.text) : null,
@@ -318,7 +328,8 @@
                 ...r.messages.map(m => el('div', { class: 'msg' }, (m.from === 'reporter' ? r.reporter : r.target) + ': ' + m.text))),
             el('div', { class: 'actions' },
                 el('button', { class: 'btn bad', onclick: () => guarded('Заблокировать «' + r.target + '»?', () => api('POST', '/ban', { name: r.target, banned: true }), 'Заблокирован', false, 'Заблокировать') }, 'Заблокировать'),
-                el('button', { class: 'btn ok', onclick: () => act(() => api('POST', '/reports/' + encodeURIComponent(r.id) + '/close'), 'Жалоба закрыта', true) }, 'Закрыть')))));
+                el('button', { class: 'btn ok', onclick: () => act(() => api('POST', '/reports/' + encodeURIComponent(r.id) + '/close'), 'Жалоба закрыта', true) }, 'Закрыть'))));
+        body.replaceChildren(...content, ...dm);
     }
 
     // ---------- Отзывы ----------

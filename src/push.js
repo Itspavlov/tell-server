@@ -113,4 +113,12 @@ function createPushSender({ store, vapid, logger = console, lib = null }) {
     return { enabled, publicKey, send };
 }
 
+PushStore.prototype.eraseUser = async function (userId) {
+    const prev = this.data.subs[userId];
+    if (prev === undefined) return 0;
+    delete this.data.subs[userId];
+    try { await this.file.save(this.data); } catch (e) { this.data.subs[userId] = prev; throw e; }
+    return prev.length;
+};
+
 module.exports = { PushStore, createPushSender, cleanSubscription };

@@ -115,7 +115,10 @@ function loadConfig(env = process.env) {
             dvizTalk: { windowMs: 60_000, max: 12 },
             verifyRequest: { windowMs: 3_600_000, max: 5 },
             pushSub: { windowMs: 3_600_000, max: 30 },
-            mediaUpload: { windowMs: 3_600_000, max: 30 }
+            mediaUpload: { windowMs: 3_600_000, max: 30 },
+            reportWrite: { windowMs: 3_600_000, max: 30 },
+            blockWrite: { windowMs: 3_600_000, max: 60 },
+            accountDelete: { windowMs: 3_600_000, max: 5 }
         })
     });
 }

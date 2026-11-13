@@ -151,4 +151,19 @@ class InviteStore {
     }
 }
 
+// Код приглашения и счётчики пользователя удаляются; записи друзей остаются (бонус уже выдан или не выдавался)
+InviteStore.prototype.eraseUser = async function (userId) {
+    const code = this.data.codes[userId], usage = this.data.usage[userId], ref = this.data.refs[userId];
+    if (code === undefined && usage === undefined && ref === undefined) return 0;
+    delete this.data.codes[userId]; delete this.data.usage[userId]; delete this.data.refs[userId];
+    if (code) this.byCode.delete(code);
+    if (!(await this.flush())) {
+        if (code !== undefined) { this.data.codes[userId] = code; this.byCode.set(code, userId); }
+        if (usage !== undefined) this.data.usage[userId] = usage;
+        if (ref !== undefined) this.data.refs[userId] = ref;
+        throw new Error('STORE_UNAVAILABLE');
+    }
+    return 1;
+};
+
 module.exports = { InviteStore, SECTIONS, BASE_LIMIT, DAY_CAP, MAX_FRIENDS };

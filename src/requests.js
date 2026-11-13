@@ -325,4 +325,25 @@ class RequestStore {
     }
 }
 
+// Удаление запросов пользователя и всех его предложений (при удалении аккаунта)
+RequestStore.prototype.eraseUser = async function (userId) {
+    const mineReq = Object.values(this.data.requests).filter(r => r.ownerId === userId).map(r => r.id);
+    const gone = new Set(mineReq);
+    const offers = Object.entries(this.data.offers).filter(([, o]) => o.ownerId === userId || gone.has(o.requestId));
+    const lastPrev = this.data.lastPost[userId];
+    if (!mineReq.length && !offers.length && lastPrev === undefined) return 0;
+    const reqBackup = mineReq.map(id => this.data.requests[id]);
+    for (const id of mineReq) delete this.data.requests[id];
+    for (const [oid] of offers) delete this.data.offers[oid];
+    delete this.data.lastPost[userId];
+    try { await this.file.save(this.data); }
+    catch (e) {
+        for (const r of reqBackup) this.data.requests[r.id] = r;
+        for (const [oid, o] of offers) this.data.offers[oid] = o;
+        if (lastPrev !== undefined) this.data.lastPost[userId] = lastPrev;
+        throw e;
+    }
+    return mineReq.length + offers.length;
+};
+
 module.exports = { RequestStore, cleanRequest };

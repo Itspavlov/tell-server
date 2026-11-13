@@ -98,4 +98,15 @@ class MediaStore {
     }
 }
 
+// Файлы пользователя (кружки, голосовые, фото) удаляются с диска
+MediaStore.prototype.eraseUser = async function (userId) {
+    const mine = Object.entries(this.items).filter(([, it]) => it.owner === userId);
+    if (!mine.length) return 0;
+    const backup = mine.map(([id, it]) => [id, it]);
+    for (const [id, it] of mine) { await this.fs.unlink(path.join(this.dir, id + '.' + it.ext)).catch(() => {}); delete this.items[id]; }
+    try { await this.file.save({ items: this.items }); }
+    catch (e) { for (const [id, it] of backup) this.items[id] = it; throw e; }
+    return mine.length;
+};
+
 module.exports = { MediaStore, sniff, sniffImage, ID_RE, MAX_BYTES };

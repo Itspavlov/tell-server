@@ -98,4 +98,13 @@ class Inbox {
     }
 }
 
+Inbox.prototype.eraseUser = async function (userId) {
+    const items = this.data.items[userId], prefs = this.data.prefs[userId];
+    if (items === undefined && prefs === undefined) return 0;
+    delete this.data.items[userId]; delete this.data.prefs[userId];
+    try { await this.flush(); }
+    catch (e) { if (items !== undefined) this.data.items[userId] = items; if (prefs !== undefined) this.data.prefs[userId] = prefs; throw e; }
+    return (items || []).length;
+};
+
 module.exports = { Inbox, GROUPS, GROUP_OF };

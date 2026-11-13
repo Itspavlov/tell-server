@@ -267,4 +267,17 @@ class ListingStore {
     }
 }
 
+// Удаление всех объявлений пользователя (при удалении аккаунта). Возвращает id удалённых
+ListingStore.prototype.eraseUser = async function (userId) {
+    const gone = Object.values(this.data.listings).filter(l => l.ownerId === userId);
+    if (!gone.length && !this.data.quota[userId]) return [];
+    const quotaPrev = this.data.quota[userId];
+    for (const l of gone) delete this.data.listings[l.id];
+    delete this.data.quota[userId];
+    try { await this.file.save(this.data); }
+    catch (e) { for (const l of gone) this.data.listings[l.id] = l; if (quotaPrev !== undefined) this.data.quota[userId] = quotaPrev; throw e; }
+    this.bytes = JSON.stringify(this.data).length;
+    return gone.map(l => l.id);
+};
+
 module.exports = { ListingStore, cleanListing, dayKey };

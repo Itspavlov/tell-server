@@ -310,4 +310,38 @@ class DmStore {
     }
 }
 
+// Личные диалоги пользователя удаляются целиком (у собеседника тоже), блокировки очищаются
+DmStore.prototype.eraseUser = async function (user) {
+    const backup = JSON.stringify(this.data);
+    const gone = Object.values(this.data.convs).filter(c => c.guestId === user.id || c.ownerKey === user.key);
+    let blocksTouched = false;
+    if (this.data.blocks[user.id]) { delete this.data.blocks[user.id]; blocksTouched = true; }
+    for (const [by, list] of Object.entries(this.data.blocks)) {
+        if (!list.includes(user.id)) continue;
+        const rest = list.filter(x => x !== user.id);
+        if (rest.length) this.data.blocks[by] = rest; else delete this.data.blocks[by];
+        blocksTouched = true;
+    }
+    if (!gone.length && !blocksTouched) return 0;
+    const pairBackup = [];
+    for (const c of gone) { const k = c.guestId + '|' + c.ownerKey; pairBackup.push([k, this.pair.get(k)]); this.pair.delete(k); delete this.data.convs[c.id]; }
+    try { await this.file.save(this.data); }
+    catch (e) { this.data = JSON.parse(backup); for (const [k, v] of pairBackup) if (v) this.pair.set(k, v); throw e; }
+    return gone.length;
+};
+
+// Общий список заблокированных пользователей (тот же, что и в личных диалогах)
+DmStore.prototype.blockedIds = function (userId) { return (this.data.blocks[userId] || []).slice(); };
+DmStore.prototype.blockUser = async function (user, otherId, on) {
+    if (typeof otherId !== 'string' || !otherId || otherId === user.id) return fail('BAD_PAYLOAD');
+    if (!this.accounts.byId(otherId)) return fail('NO_USER');
+    const prev = this.data.blocks[user.id] ? [...this.data.blocks[user.id]] : null;
+    const list = new Set(prev || []);
+    if (on) { if (!list.has(otherId) && list.size >= BLOCK_CAP) return fail('TOO_MANY_BLOCKS'); list.add(otherId); } else list.delete(otherId);
+    if (list.size) this.data.blocks[user.id] = [...list]; else delete this.data.blocks[user.id];
+    try { await this.file.save(this.data); }
+    catch (e) { if (prev) this.data.blocks[user.id] = prev; else delete this.data.blocks[user.id]; return fail('STORE_UNAVAILABLE'); }
+    return { ok: true, blocked: this.blockedIds(user.id) };
+};
+
 module.exports = { DmStore };

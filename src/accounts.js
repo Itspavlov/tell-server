@@ -281,4 +281,38 @@ class AccountStore {
     }
 }
 
+// ----- удаление аккаунта (требование магазинов приложений) -----
+// Проверка пароля действующего пользователя
+AccountStore.prototype.checkPassword = async function (userId, password) {
+    const u = this.data.users[userId];
+    if (!u || typeof password !== 'string' || password.length > 72) return false;
+    const h = Buffer.from(await this._hash(password, u.salt), 'hex'), b = Buffer.from(u.hash, 'hex');
+    return h.length === b.length && crypto.timingSafeEqual(h, b);
+};
+// Аккаунт и все его сессии удаляются; имя снова свободно
+AccountStore.prototype.removeUser = async function (userId) {
+    const u = this.data.users[userId];
+    if (!u) return { ok: true, already: true };
+    const prevSessions = { ...this.data.sessions };
+    delete this.data.users[userId]; this.byKey.delete(u.key);
+    for (const [h, s] of Object.entries(this.data.sessions)) if (s.userId === userId) delete this.data.sessions[h];
+    try { await this.file.save(this.data); }
+    catch (e) {
+        this.data.users[userId] = u; this.byKey.set(u.key, u); this.data.sessions = prevSessions;
+        this.logger.error?.(`removeUser: ${e.code || e.message}`);
+        return fail('SERVER_ERROR');
+    }
+    return { ok: true };
+};
+
+// Отметка о согласии с политикой и соглашением (версия документов + время). Не критична: при сбое просто не запишется.
+AccountStore.prototype.markConsent = async function (userId, version) {
+    const u = this.data.users[userId];
+    if (!u) return false;
+    const prev = u.consent;
+    u.consent = { v: String(version || '1').slice(0, 20), at: this.now() };
+    try { await this.file.save(this.data); return true; }
+    catch (e) { u.consent = prev; return false; }
+};
+
 module.exports = { AccountStore, nameKey };

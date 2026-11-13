@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -123,6 +123,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!r.ok) return authFail(res, r);
         // пришёл по ссылке друга: запоминаем, кто пригласил (засчитается, когда новичок опубликует карточку)
         if (invites && typeof b.ref === 'string') { try { await invites.attach(r.user.id, b.ref); } catch (e) { logger.warn?.(`invites attach: ${e && e.message}`); } }
+        if (b.consent === true) { try { await accounts.markConsent(r.user.id, typeof b.consentVersion === 'string' ? b.consentVersion : '1'); } catch (e) { logger.warn?.(`consent: ${e && e.message}`); } }
         res.status(201).json({ ok: true, token: r.token, user: r.user });
     }
 
@@ -401,6 +402,117 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!s) return res.status(503).json({ ok: false, code: 'SERVER_ERROR' });
         await admin.audit('impersonate', { target: trunc(u.name, 40), ip: ipOf(req) });
         res.json({ ok: true, token: s.token, user: { id: s.user.id, name: s.user.name, verified: !!s.user.verified }, expires: s.expires });
+    }
+
+
+    // ---------- удаление аккаунта: пароль + каскад по всем хранилищам ----------
+    // Порядок важен: сначала всё содержимое, аккаунт — последним. Если что-то упало, аккаунт остаётся и удаление можно повторить.
+    async function accountDelete(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.accountDelete.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        if (!(await accounts.checkPassword(u.id, b.password))) return res.status(401).json({ ok: false, code: 'BAD_CREDENTIALS', message: 'Пароль не подходит' });
+        const done = {};
+        try {
+            if (store) { const removed = await store.removeByUser(u.name); done.messages = removed.length; if (io) for (const r of removed.slice(0, 2000)) io.to(r.room).emit('message-deleted', r); }
+            const steps = [
+                ['listings', () => listings && listings.eraseUser(u.id)],
+                ['requests', () => requests && requests.eraseUser(u.id)],
+                ['dviz', () => dviz && dviz.eraseUser(u.id)],
+                ['services', () => services && services.eraseUser(u.id)],
+                ['reviews', () => reviews && reviews.eraseUser(u.id)],
+                ['favorites', () => favorites && favorites.eraseUser(u.id)],
+                ['searches', () => searches && searches.eraseUser(u.id)],
+                ['inbox', () => inbox && inbox.eraseUser(u.id)],
+                ['push', () => pushStore && pushStore.eraseUser(u.id)],
+                ['invites', () => invites && invites.eraseUser(u.id)],
+                ['media', () => media && media.eraseUser(u.id)],
+                ['dms', () => dms && dms.eraseUser(u)],
+                ['groups', () => groups && groups.eraseUser(u.id)],
+                ['reactions', () => adReacts && adReacts.eraseUser(u.id)]
+            ];
+            for (const [name, fn] of steps) { const r = fn(); if (r) done[name] = await r; }
+            const r = await accounts.removeUser(u.id);
+            if (!r.ok) throw new Error(r.code || 'ACCOUNT_STORE');
+        } catch (e) {
+            logger.error?.(`accountDelete ${u.id}: ${(e && (e.code || e.message)) || e}`);
+            return res.status(503).json({ ok: false, code: 'ERASE_FAILED', message: 'Не удалось удалить все данные. Попробуйте ещё раз: аккаунт пока не удалён' });
+        }
+        if (io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
+        logger.info?.(`Аккаунт удалён пользователем: ${u.id}`);
+        res.json({ ok: true });
+    }
+
+    // ---------- жалобы на контент и блокировка пользователей ----------
+    function reportTarget(kind, id, room) {
+        const ownerOf = (ownerId, ownerName, title) => ({ ownerId: ownerId || '', ownerName: ownerName || '', title: title || '' });
+        if (kind === 'listing') { const l = listings && listings.rawById(id); return l ? ownerOf(l.ownerId, l.ownerName, l.ad && l.ad.title) : null; }
+        if (kind === 'request') { const r = requests && requests.data.requests[id]; return r ? ownerOf(r.ownerId, r.ownerName, r.title || r.text) : null; }
+        if (kind === 'dviz') { const e = dviz && dviz.data.items[id]; return e ? ownerOf(e.ownerId, e.ownerName, e.title) : null; }
+        if (kind === 'service') { const s = services && services.data.items[id]; return s ? ownerOf(s.ownerId, s.ownerName, s.title) : null; }
+        if (kind === 'review') { const r = reviews && reviews.get(id); return r ? ownerOf(r.authorId, r.authorName, r.text) : null; }
+        if (kind === 'user') { const x = accounts && accounts.byId(id); return x ? ownerOf(x.id, x.name, x.name) : null; }
+        if (kind === 'message') {
+            const list = store && typeof room === 'string' && Array.isArray(store.data[room]) ? store.data[room] : [];
+            const m = list.find(x => x && x.id === id);
+            if (!m) return null;
+            const o = accounts && accounts.findByKey(nameKey(m.user || ''));
+            return ownerOf(o ? o.id : '', m.user, String(m.text || '').slice(0, 160));
+        }
+        return null;
+    }
+
+    async function reportCreate(req, res) {
+        if (!accounts || !reports) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Войдите в аккаунт, чтобы пожаловаться' });
+        const rl = limiters.reportWrite.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const target = reportTarget(b.kind, typeof b.targetId === 'string' ? b.targetId : '', b.room);
+        if (!target) return res.status(404).json({ ok: false, code: 'TARGET_NOT_FOUND', message: 'Материал уже удалён или не найден' });
+        const r = await reports.create(u, b, target);
+        if (!r.ok) return res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : (r.code === 'REPORT_DUPLICATE' ? 409 : 400)).json(r);
+        res.status(201).json({ ok: true, id: r.id });
+    }
+
+    async function blocksList(req, res) {
+        if (!accounts || !dms) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const users = dms.blockedIds(u.id).map(id => { const x = accounts.byId(id); return x ? { id: x.id, name: x.name } : null; }).filter(Boolean);
+        res.json({ ok: true, users });
+    }
+
+    async function blockSet(req, res) {
+        if (!accounts || !dms) return res.status(404).json({ error: 'Not found' });
+        const u = accounts.authenticate(bearer(req));
+        if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
+        const rl = limiters.blockWrite.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await dms.blockUser(u, b.userId, b.on !== false);
+        if (!r.ok) return res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : (r.code === 'NO_USER' ? 404 : 400)).json(r);
+        res.json({ ok: true, users: r.blocked.map(id => { const x = accounts.byId(id); return x ? { id: x.id, name: x.name } : null; }).filter(Boolean) });
+    }
+
+    async function adminContentReports(req, res) {
+        if (!reports) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_content_reports', {}))) return;
+        res.json({ ok: true, reports: reports.list({ status: req.query && req.query.status === 'all' ? 'all' : 'open' }) });
+    }
+
+    async function adminContentReportClose(req, res) {
+        if (!reports) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'close_content_report', { id: trunc(req.params.id, 40) }))) return;
+        const b = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await reports.close(req.params.id, b.note);
+        if (!r.ok) return res.status(r.code === 'REPORT_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        await admin.audit('close_content_report', { id: trunc(req.params.id, 40), ip: ipOf(req) });
+        res.json({ ok: true });
     }
 
     // В режиме поддержки закрыто всё личное: переписка, уведомления, push, медиа, данные аккаунта.
@@ -1125,15 +1237,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { accountDelete, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1188,6 +1300,12 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/auth/avatar', h.setAvatar);
     app.post('/api/auth/verify-request', h.verifyRequest);
     app.get('/api/auth/me', h.me);
+    app.delete('/api/auth/account', express.json({ limit: '1kb' }), h.accountDelete);
+    app.post('/api/reports', express.json({ limit: '2kb' }), h.reportCreate);
+    app.get('/api/blocks', h.blocksList);
+    app.post('/api/blocks', express.json({ limit: '1kb' }), h.blockSet);
+    app.get('/api/admin/content-reports', h.adminContentReports);
+    app.post('/api/admin/content-reports/:id/close', express.json({ limit: '1kb' }), h.adminContentReportClose);
     app.get('/api/avatars', h.avatarsByNames);
     app.get('/api/push/key', h.pushKey);
     app.use('/api/push', express.json({ limit: '4kb' }));

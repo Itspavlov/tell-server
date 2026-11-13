@@ -29,6 +29,7 @@ const { StatsStore } = require('./src/stats');
 const { SearchStore } = require('./src/searches');
 const { WeatherStore } = require('./src/weather');
 const { InviteStore } = require('./src/invites');
+const { ReportStore } = require('./src/reports');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -78,6 +79,9 @@ async function start(env = process.env, logger = console) {
     const invites = new InviteStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, logger });
     await invites.init();
 
+    const reports = new ReportStore({ dataDir: cfg.dataDir, logger });
+    await reports.init();
+
     const pushStore = new PushStore({ dataDir: cfg.dataDir, logger });
     await pushStore.init();
     const push = createPushSender({ store: pushStore, vapid: cfg.vapid, logger });
@@ -97,7 +101,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

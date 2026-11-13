@@ -293,4 +293,44 @@ class AdReactions {
     }
 }
 
+// Из групп пользователь выходит вместе со своими сообщениями; пустая группа удаляется, владельцем становится следующий участник
+GroupStore.prototype.eraseUser = async function (userId) {
+    const backup = JSON.stringify(this.data);
+    let n = 0;
+    for (const g of Object.values(this.data.groups)) {
+        const mine = g.members.includes(userId);
+        const msgs = g.messages.length;
+        g.messages = g.messages.filter(m => m.from !== userId);
+        if (!mine && g.messages.length === msgs) continue;
+        n++;
+        g.members = g.members.filter(id => id !== userId);
+        if (!g.members.length) { delete this.data.groups[g.id]; this.byCode.delete(g.code); continue; }
+        if (g.ownerId === userId) g.ownerId = g.members[0];
+    }
+    if (!n) return 0;
+    try { await this.file.save(this.data); }
+    catch (e) {
+        this.data = JSON.parse(backup);
+        this.byCode.clear(); for (const g of Object.values(this.data.groups)) this.byCode.set(g.code, g.id);
+        throw e;
+    }
+    return n;
+};
+// Реакции пользователя под объявлениями
+AdReactions.prototype.eraseUser = async function (userId) {
+    const backup = JSON.stringify(this.data);
+    let n = 0;
+    for (const [adId, r] of Object.entries(this.data.ads)) {
+        for (const e of Object.keys(r)) {
+            if (!Array.isArray(r[e])) continue;
+            const rest = r[e].filter(v => v !== userId);
+            if (rest.length !== r[e].length) { n++; if (rest.length) r[e] = rest; else delete r[e]; }
+        }
+        if (!Object.keys(r).length) delete this.data.ads[adId];
+    }
+    if (!n) return 0;
+    try { await this.file.save(this.data); } catch (e) { this.data = JSON.parse(backup); throw e; }
+    return n;
+};
+
 module.exports = { GroupStore, AdReactions, cleanAd, AD_ID_RE };

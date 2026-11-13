@@ -201,4 +201,22 @@ class DvizStore {
     }
 }
 
+// Удаляем встречи пользователя, его комментарии и «я с вами» в чужих встречах (при удалении аккаунта)
+DvizStore.prototype.eraseUser = async function (userId) {
+    const backup = JSON.stringify(this.data);
+    let n = 0;
+    for (const e of Object.values(this.data.items)) {
+        if (e.ownerId === userId) { delete this.data.items[e.id]; n++; continue; }
+        const c = e.comments.length, j = e.joins.length;
+        e.comments = e.comments.filter(x => x.userId !== userId);
+        e.joins = e.joins.filter(x => x.userId !== userId);
+        n += (c - e.comments.length) + (j - e.joins.length);
+    }
+    if (!n) return 0;
+    try { await this.file.save(this.data); }
+    catch (err) { this.data = JSON.parse(backup); throw err; }
+    this.bytes = JSON.stringify(this.data).length;
+    return n;
+};
+
 module.exports = { DvizStore, cleanDviz };

@@ -149,4 +149,15 @@ class ReviewStore {
     }
 }
 
+// Отзывы пользователя и отзывы на его объявления удаляются вместе с аккаунтом
+ReviewStore.prototype.eraseUser = async function (userId) {
+    const gone = Object.values(this.data.items).filter(r => r.authorId === userId || r.ownerId === userId);
+    if (!gone.length) return 0;
+    for (const r of gone) delete this.data.items[r.id];
+    try { await this.file.save(this.data); }
+    catch (e) { for (const r of gone) this.data.items[r.id] = r; this._index(); throw e; }
+    this._index();
+    return gone.length;
+};
+
 module.exports = { ReviewStore };
