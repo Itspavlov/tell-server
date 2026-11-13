@@ -30,6 +30,7 @@ const { SearchStore } = require('./src/searches');
 const { WeatherStore } = require('./src/weather');
 const { InviteStore } = require('./src/invites');
 const { ReportStore } = require('./src/reports');
+const { createMailer } = require('./src/mailer');
 
 async function start(env = process.env, logger = console) {
     const cfg = loadConfig(env);
@@ -89,6 +90,8 @@ async function start(env = process.env, logger = console) {
 
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
+    const mailer = createMailer(cfg.mail, { logger });
+    logger.info(`Почта (коды восстановления): ${mailer.enabled ? 'включена' : 'выключена (нет SMTP_HOST/SMTP_USER/SMTP_PASS)'}`);
 
     let layer = null; // создаётся ниже, после io
     const server = http.createServer();
@@ -101,7 +104,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

@@ -31,6 +31,18 @@ const MESSAGES = {
     SERVER_ERROR: 'Ошибка сервера. Попробуйте позже',
     BAD_PASSWORD: 'Пароль: от 8 до 72 символов',
     SAME_PASSWORD: 'Новый пароль совпадает с текущим',
+    BAD_EMAIL: 'Проверьте адрес почты',
+    EMAIL_TAKEN: 'Эта почта уже привязана к другому аккаунту',
+    MAIL_DISABLED: 'Отправка писем пока не подключена. Используйте код восстановления',
+    MAIL_WAIT: 'Письмо уже отправлено. Подождите минуту и попробуйте снова',
+    MAIL_FAILED: 'Не удалось отправить письмо. Попробуйте позже',
+    MAIL_LIMIT: 'Сегодня отправлено слишком много писем. Попробуйте завтра',
+    BAD_CODE: 'Неверный код',
+    CODE_EXPIRED: 'Код устарел. Запросите новый',
+    NO_PENDING: 'Сначала запросите код',
+    NO_EMAIL: 'Почта не привязана',
+    RESET_FAILED: 'Неверное имя или код. Проверьте и попробуйте снова',
+    RESET_LOCKED: 'Слишком много неудачных попыток. Подождите 15 минут',
     NAME_TAKEN: 'Это имя уже занято. Войдите в аккаунт или выберите другое имя',
     BAD_CREDENTIALS: 'Неверное имя или пароль',
     AUTH_REQUIRED: 'Нужно войти в аккаунт',
@@ -209,6 +221,21 @@ function validatePassword(pw) {
     return { ok: true, value: pw };
 }
 
+// Почта: проверяем только форму, настоящая проверка — письмо с кодом.
+// Домен приводим к ASCII (punycode), имя до «@» — только латиница и обычные знаки.
+function validateEmail(raw) {
+    if (typeof raw !== 'string') return fail('BAD_EMAIL');
+    const v = raw.trim().toLowerCase();
+    if (v.length < 6 || v.length > 254) return fail('BAD_EMAIL');
+    const m = /^([^@\s]{1,64})@([^@\s]{3,190})$/.exec(v);
+    if (!m) return fail('BAD_EMAIL');
+    const local = m[1];
+    if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local) || local.startsWith('.') || local.endsWith('.') || local.includes('..')) return fail('BAD_EMAIL');
+    const domain = require('url').domainToASCII(m[2].normalize('NFC'));
+    if (!domain || domain.length > 253 || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z0-9-]{2,24}$/.test(domain)) return fail('BAD_EMAIL');
+    return { ok: true, value: local + '@' + domain };
+}
+
 // Аватар — только первая буква имени; присланному клиентом аватару не верим
 function avatarFor(user) {
     const first = Array.from(String(user || ''))[0] || '?';
@@ -217,6 +244,6 @@ function avatarFor(user) {
 
 module.exports = {
     MESSAGES, fail, isValidRoom, normalizeName, normalizeText,
-    validateImage, validateSend, validatePassword, avatarFor, detectMime, IMAGE_RE,
+    validateImage, validateSend, validatePassword, validateEmail, avatarFor, detectMime, IMAGE_RE,
     REACTIONS, CLIENT_ID_RE, MSG_ID_RE
 };

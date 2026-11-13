@@ -67,6 +67,13 @@ function loadConfig(env = process.env) {
         listenHost: env.LISTEN_HOST || '0.0.0.0',
         // сколько разных людей должны пожаловаться, чтобы материал скрылся до проверки (0 — отключить)
         reportHideAt: intEnv(env, 'REPORT_HIDE_AT', 3, 0, 50),
+        // Почта для кодов восстановления (SMTP по TLS, обычно порт 465). Не задано — письма выключены.
+        mail: Object.freeze({
+            host: env.SMTP_HOST || '', port: intEnv(env, 'SMTP_PORT', 465, 1, 65535),
+            user: env.SMTP_USER || '', pass: env.SMTP_PASS || '',
+            from: env.SMTP_FROM || env.SMTP_USER || '', fromName: env.SMTP_FROM_NAME || 'YuGi YuGi',
+            mode: env.SMTP_MODE === 'plain' ? 'plain' : 'tls'
+        }),
         dataDir: env.DATA_DIR ? path.resolve(env.DATA_DIR) : path.join(__dirname, '..', 'data'),
         adminToken,
         vapid: Object.freeze({ publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || '' }),
@@ -123,7 +130,11 @@ function loadConfig(env = process.env) {
             reportWrite: { windowMs: 3_600_000, max: 30 },
             blockWrite: { windowMs: 3_600_000, max: 60 },
             accountDelete: { windowMs: 3_600_000, max: 5 },
-            passwordChange: { windowMs: 3_600_000, max: 10 }
+            passwordChange: { windowMs: 3_600_000, max: 10 },
+            resetIp: { windowMs: 3_600_000, max: 15 },
+            resetName: { windowMs: 900_000, max: 8 },
+            emailAdd: { windowMs: 3_600_000, max: 5 },
+            mailGlobal: { windowMs: 86_400_000, max: intEnv(env, 'MAIL_DAILY_MAX', 300, 1, 100000) }
         })
     });
 }

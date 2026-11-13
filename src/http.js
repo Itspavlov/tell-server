@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -124,7 +124,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         // пришёл по ссылке друга: запоминаем, кто пригласил (засчитается, когда новичок опубликует карточку)
         if (invites && typeof b.ref === 'string') { try { await invites.attach(r.user.id, b.ref); } catch (e) { logger.warn?.(`invites attach: ${e && e.message}`); } }
         if (b.consent === true) { try { await accounts.markConsent(r.user.id, typeof b.consentVersion === 'string' ? b.consentVersion : '1'); } catch (e) { logger.warn?.(`consent: ${e && e.message}`); } }
-        res.status(201).json({ ok: true, token: r.token, user: r.user });
+        res.status(201).json({ ok: true, token: r.token, user: r.user, recoveryCode: r.recoveryCode });
     }
 
     async function login(req, res) {
@@ -463,7 +463,108 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         }
         if (io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
         logger.info?.(`Пароль изменён: ${u.id}`);
+        mailNotice(accounts.emailOf(u.id), 'Пароль изменён', 'Пароль вашего аккаунта в YuGi YuGi был изменён. Все остальные устройства вышли из аккаунта.\n\nЕсли это были не вы, сразу восстановите доступ через «Забыли пароль?» на экране входа.');
         res.json({ ok: true });
+    }
+
+    // ---------- восстановление доступа: код восстановления, почта, «забыли пароль» ----------
+    const mail = mailer || { enabled: false, send: async () => { throw new Error('MAIL_DISABLED'); } };
+    const mailBudget = () => limiters.mailGlobal.hit('all').ok;
+    // письма-уведомления: без ожидания и без ошибок наружу
+    function mailNotice(to, subject, text) {
+        if (!to || !mail.enabled || !mailBudget()) return;
+        mail.send({ to, subject: subject + ' — YuGi YuGi', text: text + '\n\nYuGi YuGi · yugiyugi.ru' }).catch(() => {});
+    }
+    function authUser(req, res) {
+        if (!accounts) { res.status(404).json({ error: 'Not found' }); return null; }
+        const u = accounts.authenticate(bearer(req));
+        if (!u) { res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' }); return null; }
+        return u;
+    }
+    const recFail = (res, r) => res.status({ BAD_CREDENTIALS: 401, EMAIL_TAKEN: 409, MAIL_WAIT: 429, RESET_LOCKED: 429, SERVER_ERROR: 503 }[r.code] || 400)
+        .json({ ok: false, code: r.code, message: r.code === 'BAD_CREDENTIALS' ? 'Пароль не подходит' : r.message });
+    const bodyOf = (req) => (req.body && typeof req.body === 'object' ? req.body : {});
+
+    function authOptions(req, res) { res.json({ ok: true, mail: mail.enabled }); }
+
+    function recoveryInfo(req, res) {
+        const u = authUser(req, res); if (!u) return;
+        res.json({ ...accounts.recoveryStatus(u.id), mail: mail.enabled });
+    }
+
+    async function recoveryCodeNew(req, res) {
+        const u = authUser(req, res); if (!u) return;
+        const rl = limiters.passwordChange.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await accounts.newRecoveryCode(u.id, bodyOf(req).password);
+        if (!r.ok) return recFail(res, r);
+        logger.info?.(`Новый код восстановления: ${u.id}`);
+        res.json({ ok: true, code: r.code });
+    }
+
+    async function emailStart(req, res) {
+        const u = authUser(req, res); if (!u) return;
+        if (!mail.enabled) return res.status(503).json(fail('MAIL_DISABLED'));
+        const rl = limiters.emailAdd.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const b = bodyOf(req);
+        const r = await accounts.emailStart(u.id, b.password, b.email);
+        if (!r.ok) return recFail(res, r);
+        if (r.already) return res.json({ ok: true, already: true });
+        if (!mailBudget()) { accounts.emailCancel(u.id); return res.status(503).json(fail('MAIL_LIMIT')); }
+        try {
+            await mail.send({ to: r.email, subject: 'Код подтверждения почты — YuGi YuGi', text: `Ваш код: ${r.code}\n\nВведите его в приложении, чтобы привязать эту почту к аккаунту. Код действует 15 минут.\n\nЕсли вы не запрашивали привязку, просто проигнорируйте письмо.\n\nYuGi YuGi · yugiyugi.ru` });
+        } catch (e) { accounts.emailCancel(u.id); return res.status(502).json(fail('MAIL_FAILED')); }
+        res.json({ ok: true });
+    }
+
+    async function emailConfirm(req, res) {
+        const u = authUser(req, res); if (!u) return;
+        const rl = limiters.emailAdd.hit(u.id + ':c');
+        if (!rl.ok) return limited(res, rl);
+        const r = await accounts.emailConfirm(u.id, bodyOf(req).code);
+        if (!r.ok) return recFail(res, r);
+        res.json({ ok: true, email: r.email });
+    }
+
+    async function emailRemove(req, res) {
+        const u = authUser(req, res); if (!u) return;
+        const rl = limiters.passwordChange.hit(u.id);
+        if (!rl.ok) return limited(res, rl);
+        const r = await accounts.emailRemove(u.id, bodyOf(req).password);
+        if (!r.ok) return recFail(res, r);
+        res.json({ ok: true });
+    }
+
+    // «Забыли пароль», шаг 1: ответ всегда одинаковый, есть у аккаунта почта или нет
+    async function resetStart(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        if (!mail.enabled) return res.status(503).json(fail('MAIL_DISABLED'));
+        const rl = limiters.resetIp.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const b = bodyOf(req);
+        if (typeof b.name === 'string') { const rn = limiters.resetName.hit(nameKey(b.name).slice(0, 40)); if (!rn.ok) return limited(res, rn); }
+        const r = accounts.resetStart(b.name);
+        if (r.code && mailBudget()) {
+            mail.send({ to: r.email, subject: 'Восстановление пароля — YuGi YuGi', text: `Код для сброса пароля: ${r.code}\n\nВведите его в приложении вместе с новым паролем. Код действует 15 минут.\n\nЕсли вы не запрашивали сброс, ничего не делайте: пароль останется прежним.\n\nYuGi YuGi · yugiyugi.ru` }).catch(() => {});
+        }
+        res.json({ ok: true });
+    }
+
+    // Шаг 2: новый пароль по коду из письма или по коду восстановления; сразу входим
+    async function resetConfirm(req, res) {
+        if (!accounts) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.resetIp.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const b = bodyOf(req);
+        if (b.method !== 'email' && b.method !== 'recovery') return res.status(400).json(fail('RESET_FAILED'));
+        if (typeof b.name === 'string') { const rn = limiters.resetName.hit(nameKey(b.name).slice(0, 40)); if (!rn.ok) return limited(res, rn); }
+        const r = await accounts.resetConfirm(b.name, b.method, b.code, b.password);
+        if (!r.ok) return recFail(res, r);
+        if (io && typeof io.in === 'function') { try { io.in('user:' + r.user.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
+        logger.info?.(`Пароль сброшен по ${b.method}: ${r.user.id}`);
+        mailNotice(r.email, 'Пароль изменён', 'Пароль вашего аккаунта в YuGi YuGi был сброшен по коду восстановления, все устройства вышли из аккаунта.\n\nЕсли это были не вы, срочно напишите в поддержку.');
+        res.json({ ok: true, token: r.token, user: r.user, ...(r.recoveryCode ? { recoveryCode: r.recoveryCode } : {}) });
     }
 
     // ---------- жалобы на контент и блокировка пользователей ----------
@@ -1275,15 +1376,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { accountDelete, passwordChange, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1340,6 +1441,14 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/auth/me', h.me);
     app.delete('/api/auth/account', express.json({ limit: '1kb' }), h.accountDelete);
     app.post('/api/auth/password', express.json({ limit: '1kb' }), h.passwordChange);
+    app.get('/api/auth/options', h.authOptions);
+    app.get('/api/auth/recovery', h.recoveryInfo);
+    app.post('/api/auth/recovery-code', h.recoveryCodeNew);
+    app.post('/api/auth/email', h.emailStart);
+    app.post('/api/auth/email/confirm', h.emailConfirm);
+    app.delete('/api/auth/email', h.emailRemove);
+    app.post('/api/auth/reset', h.resetStart);
+    app.post('/api/auth/reset/confirm', h.resetConfirm);
     app.post('/api/reports', express.json({ limit: '2kb' }), h.reportCreate);
     app.get('/api/blocks', h.blocksList);
     app.post('/api/blocks', express.json({ limit: '1kb' }), h.blockSet);

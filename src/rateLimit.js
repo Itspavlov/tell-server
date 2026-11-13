@@ -79,7 +79,11 @@ function createLimiters(rates, now) {
         reportWrite: make(rates.reportWrite),
         blockWrite: make(rates.blockWrite),
         accountDelete: make(rates.accountDelete),
-        passwordChange: make(rates.passwordChange)
+        passwordChange: make(rates.passwordChange),
+        resetIp: make(rates.resetIp),
+        resetName: make(rates.resetName),
+        emailAdd: make(rates.emailAdd),
+        mailGlobal: make(rates.mailGlobal)
     };
 }
 

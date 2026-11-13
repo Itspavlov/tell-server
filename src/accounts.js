@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const { promisify } = require('util');
 const path = require('path');
 const { JsonFile } = require('./jsonfile');
-const { normalizeName, validatePassword, fail } = require('./validate');
+const { normalizeName, validatePassword, validateEmail, fail } = require('./validate');
 
 const scrypt = promisify(crypto.scrypt);
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -27,6 +27,28 @@ const RENAME_COOLDOWN_MS = 24 * 3600 * 1000;   // имя можно менять
 function nameKey(name) {
     return String(name).normalize('NFC').toLowerCase().replace(/[\s_.'\-]+/g, '');
 }
+const RECOVERY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // без 0/O и 1/I: код не перепутать при переписывании
+const CODE_TTL_MS = 15 * 60 * 1000;
+const CODE_TRIES = 5;
+const MAIL_COOLDOWN_MS = 60 * 1000;
+const RESET_FAIL_MAX = 5;
+const RESET_LOCK_MS = 15 * 60 * 1000;
+const hsh = (salt, v) => crypto.createHash('sha256').update(salt + ':' + v).digest('hex');
+const safeEq = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+function newRecoveryCode() {
+    let s = '';
+    for (let i = 0; i < 16; i++) s += RECOVERY_ALPHABET[crypto.randomInt(RECOVERY_ALPHABET.length)];
+    return s.match(/.{4}/g).join('-');
+}
+function normRecovery(raw) {
+    const s = String(raw == null ? '' : raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return s.length === 16 && [...s].every((c) => RECOVERY_ALPHABET.includes(c)) ? s : '';
+}
+function mkRecovery(code) { const salt = crypto.randomBytes(8).toString('hex'); return { salt, hash: hsh(salt, normRecovery(code)), at: Date.now() }; }
+function maskEmail(e) {
+    const [l, d] = String(e).split('@');
+    return (l.length <= 2 ? l[0] : l.slice(0, 2)) + '***@' + d;
+}
 const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
 class AccountStore {
@@ -38,12 +60,16 @@ class AccountStore {
         this.data = { users: {}, sessions: {} };
         this.byKey = new Map();
         this.dummy = null;
+        this.byEmail = new Map();       // почта -> id пользователя (только подтверждённые)
+        this.mailPending = new Map();   // id -> код подтверждения почты (в памяти, живёт 15 минут)
+        this.resets = new Map();        // id -> код сброса пароля (в памяти)
+        this.resetFails = new Map();    // имя -> неудачные попытки сброса
     }
 
     async init() {
         const d = await this.file.load({ users: {}, sessions: {} });
         this.data = { users: d.users || {}, sessions: d.sessions || {} };
-        for (const u of Object.values(this.data.users)) this.byKey.set(u.key, u);
+        for (const u of Object.values(this.data.users)) { this.byKey.set(u.key, u); if (u.email) this.byEmail.set(u.email, u.id); }
         this.dummy = { salt: crypto.randomBytes(16).toString('hex') };
         this.logger.info?.(`Аккаунты: ${this.byKey.size}`);
     }
@@ -145,7 +171,8 @@ class AccountStore {
         // повторная проверка после await: две одновременные регистрации не пройдут обе
         if (this.byKey.has(key)) return fail('NAME_TAKEN');
 
-        const user = { id: 'u_' + crypto.randomBytes(8).toString('hex'), name: n.value, key, salt, hash, createdAt: this.now() };
+        const recoveryCode = newRecoveryCode();
+        const user = { id: 'u_' + crypto.randomBytes(8).toString('hex'), name: n.value, key, salt, hash, createdAt: this.now(), recovery: mkRecovery(recoveryCode) };
         this.data.users[user.id] = user;
         this.byKey.set(key, user);
         const token = await this._newSession(user.id);
@@ -155,7 +182,7 @@ class AccountStore {
             this.logger.error?.(`Аккаунт не сохранён: ${e.code || e.message}`);
             return fail('SERVER_ERROR');
         }
-        return { ok: true, token, user: { id: user.id, name: user.name, verified: false } };
+        return { ok: true, token, user: { id: user.id, name: user.name, verified: false }, recoveryCode };
     }
 
     async login(rawName, password) {
@@ -317,10 +344,13 @@ AccountStore.prototype.removeUser = async function (userId) {
     if (!u) return { ok: true, already: true };
     const prevSessions = { ...this.data.sessions };
     delete this.data.users[userId]; this.byKey.delete(u.key);
+    if (u.email && this.byEmail.get(u.email) === userId) this.byEmail.delete(u.email);
+    this.mailPending.delete(userId); this.resets.delete(userId);
     for (const [h, s] of Object.entries(this.data.sessions)) if (s.userId === userId) delete this.data.sessions[h];
     try { await this.file.save(this.data); }
     catch (e) {
         this.data.users[userId] = u; this.byKey.set(u.key, u); this.data.sessions = prevSessions;
+        if (u.email) this.byEmail.set(u.email, userId);
         this.logger.error?.(`removeUser: ${e.code || e.message}`);
         return fail('SERVER_ERROR');
     }
@@ -337,4 +367,147 @@ AccountStore.prototype.markConsent = async function (userId, version) {
     catch (e) { u.consent = prev; return false; }
 };
 
-module.exports = { AccountStore, nameKey };
+// ---------- восстановление доступа: код восстановления, почта, сброс пароля ----------
+AccountStore.prototype.recoveryStatus = function (userId) {
+    const u = this.data.users[userId];
+    if (!u) return fail('AUTH_REQUIRED');
+    return { ok: true, hasCode: !!u.recovery, email: u.email ? maskEmail(u.email) : '' };
+};
+AccountStore.prototype.emailOf = function (userId) { const u = this.data.users[userId]; return u && u.email ? u.email : ''; };
+
+// Новый код восстановления взамен прежнего (по паролю). Показывается один раз, на сервере остаётся только хеш.
+AccountStore.prototype.newRecoveryCode = async function (userId, password) {
+    const u = this.data.users[userId];
+    if (!u) return fail('AUTH_REQUIRED');
+    if (!(await this.checkPassword(userId, password))) return fail('BAD_CREDENTIALS');
+    const code = newRecoveryCode(), prev = u.recovery;
+    u.recovery = mkRecovery(code);
+    try { await this.file.save(this.data); }
+    catch (e) { if (prev) u.recovery = prev; else delete u.recovery; this.logger.error?.(`Код восстановления не сохранён: ${e.code || e.message}`); return fail('SERVER_ERROR'); }
+    return { ok: true, code };
+};
+
+// Шаг 1 привязки почты: проверяем пароль и адрес, выдаём код для письма (письмо отправляет вызывающий)
+AccountStore.prototype.emailStart = async function (userId, password, rawEmail) {
+    const u = this.data.users[userId];
+    if (!u) return fail('AUTH_REQUIRED');
+    const e = validateEmail(rawEmail);
+    if (!e.ok) return e;
+    if (!(await this.checkPassword(userId, password))) return fail('BAD_CREDENTIALS');
+    const owner = this.byEmail.get(e.value);
+    if (owner && owner !== userId) return fail('EMAIL_TAKEN');
+    if (u.email === e.value) return { ok: true, already: true, email: e.value };
+    const t = this.now(), p = this.mailPending.get(userId);
+    if (p && t - p.sentAt < MAIL_COOLDOWN_MS) return fail('MAIL_WAIT');
+    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0'), salt = crypto.randomBytes(8).toString('hex');
+    this.mailPending.set(userId, { email: e.value, salt, hash: hsh(salt, code), exp: t + CODE_TTL_MS, tries: 0, sentAt: t });
+    return { ok: true, code, email: e.value };
+};
+AccountStore.prototype.emailCancel = function (userId) { this.mailPending.delete(userId); };
+
+// Шаг 2: человек ввёл код из письма
+AccountStore.prototype.emailConfirm = async function (userId, rawCode) {
+    const u = this.data.users[userId];
+    if (!u) return fail('AUTH_REQUIRED');
+    const p = this.mailPending.get(userId);
+    if (!p) return fail('NO_PENDING');
+    if (p.exp <= this.now()) { this.mailPending.delete(userId); return fail('CODE_EXPIRED'); }
+    const code = String(rawCode == null ? '' : rawCode).replace(/\D/g, '');
+    if (code.length !== 6 || !safeEq(hsh(p.salt, code), p.hash)) {
+        p.tries++; if (p.tries >= CODE_TRIES) this.mailPending.delete(userId);
+        return fail('BAD_CODE');
+    }
+    const owner = this.byEmail.get(p.email);
+    if (owner && owner !== userId) { this.mailPending.delete(userId); return fail('EMAIL_TAKEN'); }
+    const prev = { email: u.email, emailAt: u.emailAt };
+    if (u.email) this.byEmail.delete(u.email);
+    u.email = p.email; u.emailAt = this.now(); this.byEmail.set(u.email, userId);
+    try { await this.file.save(this.data); }
+    catch (e) {
+        this.byEmail.delete(u.email);
+        if (prev.email) { u.email = prev.email; u.emailAt = prev.emailAt; this.byEmail.set(prev.email, userId); } else { delete u.email; delete u.emailAt; }
+        this.logger.error?.(`Почта не сохранена: ${e.code || e.message}`); return fail('SERVER_ERROR');
+    }
+    this.mailPending.delete(userId);
+    return { ok: true, email: maskEmail(u.email) };
+};
+
+AccountStore.prototype.emailRemove = async function (userId, password) {
+    const u = this.data.users[userId];
+    if (!u) return fail('AUTH_REQUIRED');
+    if (!(await this.checkPassword(userId, password))) return fail('BAD_CREDENTIALS');
+    if (!u.email) return { ok: true };
+    const prev = { email: u.email, emailAt: u.emailAt };
+    this.byEmail.delete(u.email); delete u.email; delete u.emailAt;
+    try { await this.file.save(this.data); }
+    catch (e) { u.email = prev.email; u.emailAt = prev.emailAt; this.byEmail.set(prev.email, userId); return fail('SERVER_ERROR'); }
+    return { ok: true };
+};
+
+// «Забыли пароль» по почте, шаг 1. Результат наружу всегда одинаковый (none) — чужие имена не выведать.
+AccountStore.prototype.resetStart = function (rawName) {
+    const n = normalizeName(rawName, this.limits);
+    if (!n.ok) return { ok: true, none: true };
+    const u = this.byKey.get(nameKey(n.value));
+    if (!u || !u.email || u.banned) return { ok: true, none: true };
+    const t = this.now(), r = this.resets.get(u.id);
+    if (r && t - r.sentAt < MAIL_COOLDOWN_MS) return { ok: true, none: true };
+    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0'), salt = crypto.randomBytes(8).toString('hex');
+    this.resets.set(u.id, { salt, hash: hsh(salt, code), exp: t + CODE_TTL_MS, tries: 0, sentAt: t });
+    return { ok: true, userId: u.id, email: u.email, name: u.name, code };
+};
+
+// Шаг 2 (и единственный для кода восстановления): новый пароль по коду. Все сессии закрываются, выдаётся новая.
+AccountStore.prototype.resetConfirm = async function (rawName, method, rawCode, newPassword) {
+    const pw = validatePassword(newPassword);
+    if (!pw.ok) return pw;
+    const n = normalizeName(rawName, this.limits);
+    const key = n.ok ? nameKey(n.value) : 'x:' + String(rawName == null ? '' : rawName).slice(0, 40);
+    const t = this.now();
+    let f = this.resetFails.get(key);
+    if (f && f.until > t) return fail('RESET_LOCKED');
+    if (f && t - f.first > RESET_LOCK_MS) { this.resetFails.delete(key); f = null; }
+    const u = n.ok ? this.byKey.get(key) : null;
+    let ok = false, rec = null, rst = null;
+    if (u && !u.banned) {
+        if (method === 'recovery') {
+            const c = normRecovery(rawCode);
+            if (c && u.recovery) { rec = u.recovery; ok = safeEq(hsh(rec.salt, c), rec.hash); }
+        } else if (method === 'email') {
+            const r = this.resets.get(u.id);
+            if (r && r.exp > t) {
+                const c = String(rawCode == null ? '' : rawCode).replace(/\D/g, '');
+                ok = c.length === 6 && safeEq(hsh(r.salt, c), r.hash);
+                if (ok) rst = r; else { r.tries++; if (r.tries >= CODE_TRIES) this.resets.delete(u.id); }
+            }
+        }
+    }
+    if (!ok) {
+        const e = f || { n: 0, first: t, until: 0 };
+        e.n++; if (e.n >= RESET_FAIL_MAX) e.until = t + RESET_LOCK_MS;
+        this.resetFails.set(key, e);
+        if (this.resetFails.size > 5000) this.resetFails.delete(this.resetFails.keys().next().value);
+        return fail('RESET_FAILED');
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = await this._hash(pw.value, salt);
+    // пока считался хеш, тот же код могли применить параллельно: код одноразовый
+    if (rst ? this.resets.get(u.id) !== rst : u.recovery !== rec) return fail('RESET_FAILED');
+    const prev = { salt: u.salt, hash: u.hash, recovery: u.recovery }, prevSessions = { ...this.data.sessions };
+    u.salt = salt; u.hash = hash;
+    for (const [h, s] of Object.entries(this.data.sessions)) if (s.userId === u.id) delete this.data.sessions[h];
+    let recoveryCode = '';
+    if (method === 'recovery') { recoveryCode = newRecoveryCode(); u.recovery = mkRecovery(recoveryCode); }
+    const token = await this._newSession(u.id);
+    try { await this.file.save(this.data); }
+    catch (e) {
+        u.salt = prev.salt; u.hash = prev.hash; if (prev.recovery) u.recovery = prev.recovery; else delete u.recovery;
+        this.data.sessions = prevSessions;
+        this.logger.error?.(`Сброс пароля не сохранён: ${e.code || e.message}`);
+        return fail('SERVER_ERROR');
+    }
+    this.resets.delete(u.id); this.resetFails.delete(key);
+    return { ok: true, token, user: { id: u.id, name: u.name, verified: !!u.verified }, recoveryCode, email: u.email || '' };
+};
+
+module.exports = { AccountStore, nameKey, newRecoveryCode, normRecovery };
