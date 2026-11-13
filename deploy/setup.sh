@@ -109,6 +109,24 @@ else
 fi
 
 echo "== nginx"
+mkdir -p /etc/nginx/snippets
+cat > /etc/nginx/conf.d/tell-hardening.conf <<'HARD'
+server_tokens off;
+limit_req_zone $binary_remote_addr zone=tell_api:10m rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=tell_conn:10m;
+limit_req_status 429;
+limit_conn_status 429;
+client_header_timeout 15s;
+client_body_timeout 30s;
+send_timeout 30s;
+HARD
+cat > /etc/nginx/snippets/tell-headers.conf <<'HDR'
+add_header X-Content-Type-Options nosniff always;
+add_header Referrer-Policy no-referrer always;
+add_header X-Frame-Options SAMEORIGIN always;
+add_header Strict-Transport-Security "max-age=15552000" always;
+add_header Permissions-Policy "camera=(self), microphone=(self), geolocation=(self)" always;
+HDR
 cat > /etc/nginx/sites-available/tell <<NGINX
 server {
     listen 80;
@@ -122,10 +140,10 @@ server {
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;
 
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer always;
+    include snippets/tell-headers.conf;
 
     location /socket.io/ {
+        limit_conn tell_conn 100;
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -137,6 +155,7 @@ server {
     }
 
     location ~ ^/(api|admin|healthz|readyz)(/|\$) {
+        limit_req zone=tell_api burst=60 nodelay;
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -147,10 +166,12 @@ server {
     location /vendor/ {
         expires 30d;
         add_header Cache-Control "public, immutable";
+        include snippets/tell-headers.conf;
     }
 
     location / {
         add_header Cache-Control "no-cache";
+        include snippets/tell-headers.conf;
         try_files \$uri \$uri/ =404;
     }
 }
@@ -161,10 +182,12 @@ nginx -t
 systemctl reload nginx
 
 echo "== Ежедневная копия данных (хранится 14 дней)"
+if [ -x /usr/local/bin/tell-backup.sh ]; then echo "уже настроена расширенная копия (tell-backup.sh), пропускаю"; else
 cat > /etc/cron.d/tell-backup <<CRON
 17 4 * * * root tar -czf /var/backups/tell/tell-\$(date +\%F).tgz -C $DATA . && find /var/backups/tell -name 'tell-*.tgz' -mtime +14 -delete
 CRON
 chmod 644 /etc/cron.d/tell-backup
+fi
 
 echo "== Проверка"
 sleep 2
