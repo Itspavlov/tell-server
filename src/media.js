@@ -86,6 +86,12 @@ class MediaStore {
         return it && it.owner === ownerId && (it.kind || 'video') === kind ? { ok: true, dur: it.dur } : { ok: false };
     }
 
+    // Кому принадлежит файл и что это (null — файла уже нет)
+    info(id) {
+        const it = typeof id === 'string' && ID_RE.test(id) ? this.items[id] : null;
+        return it ? { owner: it.owner, kind: it.kind || 'video' } : null;
+    }
+
     async sweep() {
         const cut = this.now() - MAX_AGE_MS;
         let n = 0;
@@ -107,6 +113,19 @@ MediaStore.prototype.eraseUser = async function (userId) {
     try { await this.file.save({ items: this.items }); }
     catch (e) { for (const [id, it] of backup) this.items[id] = it; throw e; }
     return mine.length;
+};
+
+// Убрать файлы, которые больше не нужны (фото из удалённой карточки); ошибки не критичны
+MediaStore.prototype.remove = async function (ids) {
+    let n = 0;
+    for (const id of Array.isArray(ids) ? ids : []) {
+        const it = typeof id === 'string' && ID_RE.test(id) ? this.items[id] : null;
+        if (!it) continue;
+        await this.fs.unlink(path.join(this.dir, id + '.' + it.ext)).catch(() => {});
+        delete this.items[id]; n++;
+    }
+    if (n) await this.file.save({ items: this.items }).catch(() => {});
+    return n;
 };
 
 module.exports = { MediaStore, sniff, sniffImage, ID_RE, MAX_BYTES };

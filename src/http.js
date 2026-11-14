@@ -382,8 +382,10 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
     async function adminDeleteRequest(req, res) {
         if (!requests) return res.status(404).json({ error: 'Not found' });
         if (!(await requireAdmin(req, res, 'delete_request', { id: trunc(req.params.id, 40) }))) return;
+        const before = photosOf(req.params.id);
         const r = await requests.removeAny(req.params.id);
         if (!r.ok) return res.status(r.code === 'REQUEST_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
+        dropPhotos(before);
         if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'request', title: 'Запрос удалён', body: 'Модератор удалил ваш запрос' + (r.title ? ' «' + trunc(r.title, 60) + '»' : ''), open: 'profile', tag: 'request-removed' });
         await admin.audit('delete_request', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), title: trunc(r.title, 60), ip: ipOf(req) });
         if (io && typeof io.emit === 'function') io.emit('request-changed', { id: req.params.id, removed: true });
@@ -752,11 +754,33 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, requests: shown, cooldown: user ? requests.cooldown(user.id) : 0 });
     }
 
+    // Фото автомобиля: только свои загруженные снимки (id из /api/media), до 3 штук.
+    // Файла уже нет (карточку публикуют заново спустя месяц) — просто пропускаем; чужой или не фото — отказ.
+    function carPhotosOk(user, body) {
+        const p = body && typeof body === 'object' ? body.photos : undefined;
+        if (p === undefined) return true;
+        if (!Array.isArray(p) || p.length > 3) return false;
+        if (!p.length) return true;
+        if (!media) return false;
+        const keep = [];
+        for (const id of p) {
+            const it = media.info(id);
+            if (!it) { if (typeof id === 'string' && /^vm_[0-9a-f]{32}$/.test(id)) continue; return false; }
+            if (it.owner !== user.id || it.kind !== 'photo') return false;
+            keep.push(id);
+        }
+        body.photos = keep;
+        return true;
+    }
+    const dropPhotos = (ids) => { if (media && ids && ids.length) media.remove(ids).catch(() => {}); };
+    const photosOf = (id) => { const r = requests && typeof id === 'string' ? requests.data.requests[id] : null; return r && Array.isArray(r.photos) ? r.photos.slice() : []; };
+
     async function requestCreate(req, res) {
         if (!requests) return res.status(404).json({ error: 'Not found' });
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        if (!carPhotosOk(user, req.body)) return res.status(400).json(fail('IMAGE_INVALID'));
         const hold = invites ? invites.reserve(user.id, sectionOf(req.body && req.body.section)) : null;
         if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await requests.create(user, req.body);
@@ -819,8 +843,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        if (!carPhotosOk(user, req.body)) return res.status(400).json(fail('IMAGE_INVALID'));
+        const before = photosOf(req.params.id);
         const r = await requests.edit(user, req.params.id, req.body);
         if (!r.ok) return requestFail(res, r);
+        dropPhotos(before.filter((id) => !(r.request.photos || []).includes(id)));      // заменённые фото удаляем с диска
         io.emit('request-changed', { id: r.request.id });
         res.json({ ok: true, request: r.request });
     }
@@ -900,8 +927,10 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        const before = photosOf(req.params.id);
         const r = await requests.remove(user, req.params.id);
         if (!r.ok) return requestFail(res, r);
+        dropPhotos(before);
         io.emit('request-changed', { id: req.params.id });
         res.json({ ok: true });
     }

@@ -14,6 +14,7 @@ const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, fail } = require('./validate');
 const { matches, similar } = require('./match');
+const { ID_RE: MEDIA_ID_RE } = require('./media');
 
 const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
 const SECTIONS = ['housing', 'work', 'trips', 'services'];   // раздел, где лежит карточка
@@ -21,6 +22,7 @@ const KINDS = ['seek', 'offer'];                            // «Ищу» / «П
 const STATUSES = ['active', 'found', 'closed'];   // «истёк» вычисляется по времени
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY = 86400000;
+const MAX_CAR_PHOTOS = 3;                               // фото автомобиля в карточке «Предлагаю поездку»
 
 const text = (v, max) => { const r = normalizeText(typeof v === 'string' ? v : '', max); return r.ok ? r.value : ''; };
 const num = (v, min, max) => { if (v === '' || v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : null; };
@@ -47,7 +49,18 @@ function cleanRequest(raw, today) {
     const pets = housing && (raw.pets === true || raw.pets === 'true' || raw.pets === 1 || raw.pets === '1');
     if (housing && !city && !note && !category) return fail('BAD_REQUEST');   // совсем пустой запрос не нужен
     if (!housing && !title) return fail('BAD_REQUEST');                       // у остальных разделов нужен заголовок
-    return { ok: true, value: { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget, pets, text: note } };
+    const value = { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget, pets, text: note };
+    // фото автомобиля: только у «Предлагаю поездку», это id файлов из /api/media (принадлежность владельцу проверяет http.js)
+    if (section === 'trips' && kind === 'offer' && raw.photos !== undefined) {
+        if (!Array.isArray(raw.photos) || raw.photos.length > MAX_CAR_PHOTOS) return fail('IMAGE_INVALID');
+        const ids = [];
+        for (const id of raw.photos) {
+            if (typeof id !== 'string' || !MEDIA_ID_RE.test(id)) return fail('IMAGE_INVALID');
+            if (!ids.includes(id)) ids.push(id);
+        }
+        value.photos = ids;
+    }
+    return { ok: true, value };
 }
 
 const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.pets ? 'pets' : '', v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
@@ -82,7 +95,8 @@ class RequestStore {
             id: r.id, ownerId: r.ownerId, ownerName: r.ownerName, created: r.created, updated: r.updated,
             expires: r.created + this._ttl(), status: this._status(r), mine: viewerId === r.ownerId,
             section: r.section || 'housing', kind: r.kind || 'seek', title: r.title || '', category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
-            guests: r.guests, budget: r.budget, pets: !!r.pets, text: r.text, notify: r.notify !== false
+            guests: r.guests, budget: r.budget, pets: !!r.pets, text: r.text, notify: r.notify !== false,
+            photos: Array.isArray(r.photos) ? r.photos : []
         };
     }
 
@@ -346,4 +360,4 @@ RequestStore.prototype.eraseUser = async function (userId) {
     return mineReq.length + offers.length;
 };
 
-module.exports = { RequestStore, cleanRequest };
+module.exports = { RequestStore, cleanRequest, MAX_CAR_PHOTOS };

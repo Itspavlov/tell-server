@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/unit.test.js tests/store.test.js tests/sockets.test.js tests/http.test.js tests/accounts.test.js tests/groups.test.js tests/listings.test.js tests/moderation.test.js tests/push.test.js tests/media.test.js tests/requests.test.js tests/inbox.test.js tests/favorites.test.js tests/dmtools.test.js tests/reviews.test.js tests/stats.test.js tests/searches.test.js tests/services.test.js tests/match.test.js tests/weather.test.js tests/support.test.js tests/dviz.test.js tests/invites.test.js tests/erase.test.js tests/recovery.test.js",
+    "test": "node --test tests/unit.test.js tests/store.test.js tests/sockets.test.js tests/http.test.js tests/accounts.test.js tests/groups.test.js tests/listings.test.js tests/moderation.test.js tests/push.test.js tests/media.test.js tests/requests.test.js tests/inbox.test.js tests/favorites.test.js tests/dmtools.test.js tests/reviews.test.js tests/stats.test.js tests/searches.test.js tests/services.test.js tests/match.test.js tests/weather.test.js tests/support.test.js tests/dviz.test.js tests/invites.test.js tests/erase.test.js tests/recovery.test.js tests/carphotos.test.js",
     "test:integration": "node --test tests/integration.test.js",
     "backup": "node scripts/backup.js"
   },
