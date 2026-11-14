@@ -22,6 +22,7 @@ const KINDS = ['seek', 'offer'];                            // «Ищу» / «П
 const STATUSES = ['active', 'found', 'closed'];   // «истёк» вычисляется по времени
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY = 86400000;
+const ART_RE = /^a(0[1-9]|[1-6][0-9]|70)$/;                // картинка-иллюстрация вакансии из готовой библиотеки (a01…a70)
 const MAX_CAR_PHOTOS = 3;                               // фото автомобиля в карточке «Предлагаю поездку»
 
 const text = (v, max) => { const r = normalizeText(typeof v === 'string' ? v : '', max); return r.ok ? r.value : ''; };
@@ -60,6 +61,12 @@ function cleanRequest(raw, today) {
         }
         value.photos = ids;
     }
+    // иллюстрация вакансии: только «Предлагаю работу», id из готовой библиотеки (пустая строка убирает картинку)
+    if (section === 'work' && kind === 'offer' && raw.art !== undefined) {
+        if (raw.art === '' || raw.art === null) value.art = '';
+        else if (typeof raw.art === 'string' && ART_RE.test(raw.art)) value.art = raw.art;
+        else return fail('BAD_REQUEST');
+    }
     return { ok: true, value };
 }
 
@@ -96,7 +103,8 @@ class RequestStore {
             expires: r.created + this._ttl(), status: this._status(r), mine: viewerId === r.ownerId,
             section: r.section || 'housing', kind: r.kind || 'seek', title: r.title || '', category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
             guests: r.guests, budget: r.budget, pets: !!r.pets, text: r.text, notify: r.notify !== false,
-            photos: Array.isArray(r.photos) ? r.photos : []
+            photos: Array.isArray(r.photos) ? r.photos : [],
+            art: typeof r.art === 'string' && ART_RE.test(r.art) ? r.art : ''
         };
     }
 
