@@ -208,7 +208,9 @@
                     el('div', { class: 'mut' }, 'с ' + fmt(u.created))),
                 el('div', { class: 'actions' },
                     el('button', { class: 'btn acc', onclick: () => asUser(u.name) }, 'Войти как'),
-                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !u.verified }); await load(); }, u.verified ? 'Статус снят' : 'Подтверждён') }, u.verified ? 'Снять проверку' : 'Проверить'),
+                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !u.verified }); await load(); }, u.verified ? 'Статус снят' : 'Подтверждён') }, u.verified ? 'Снять проверку жилья' : 'Проверить жильё'),
+                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !(u.verifs && u.verifs.trips), kind: 'trips' }); await load(); }, 'Готово') }, u.verifs && u.verifs.trips ? 'Снять проверку водителя' : 'Проверить водителя'),
+                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !(u.verifs && u.verifs.services), kind: 'services' }); await load(); }, 'Готово') }, u.verifs && u.verifs.services ? 'Снять проверку развлечений' : 'Проверить развлечения'),
                     el('button', { class: 'btn ' + (u.banned ? '' : 'bad'), onclick: async () => { if (u.banned || await sure('Заблокировать ' + u.name + '? Он будет разлогинен и не сможет войти.', 'Заблокировать')) act(async () => { await api('POST', '/ban', { name: u.name, banned: !u.banned }); await load(); }, u.banned ? 'Разблокирован' : 'Заблокирован'); } }, u.banned ? 'Разблокировать' : 'Заблокировать'),
                     el('button', { class: 'btn', onclick: () => guarded('Удалить ВСЕ сообщения «' + u.name + '» во всех общих чатах?', async () => { const r = await api('POST', '/purge-user', { name: u.name }); toast('Удалено сообщений: ' + r.removed); }, '', false, 'Стереть') }, 'Стереть сообщения')))) : [empty('Никого не нашлось')]));
         };

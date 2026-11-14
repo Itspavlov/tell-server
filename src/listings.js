@@ -171,7 +171,6 @@ class ListingStore {
     }
 
     async save(user, payload) {
-        if (!user.verified) return fail('NOT_VERIFIED');
         const c = cleanListing(payload && payload.ad, payload && payload.profile);
         if (!c.ok) return c;
         const id = payload && typeof payload.id === 'string' ? payload.id : null;

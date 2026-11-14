@@ -74,7 +74,9 @@ class AccountStore {
         this.logger.info?.(`Аккаунты: ${this.byKey.size}`);
     }
 
-    _public(u) { return { id: u.id, name: u.name, key: u.key, verified: !!u.verified }; }
+    // Проверка бывает трёх видов: жильё (хозяева, это и есть старое поле verified), поездки (водители), развлечения (готовые услуги)
+    _verifs(u) { const v = u.verifs || {}; return { housing: !!u.verified, trips: !!v.trips, services: !!v.services }; }
+    _public(u) { return { id: u.id, name: u.name, key: u.key, verified: !!u.verified, verifs: this._verifs(u) }; }
     findByKey(key) { const u = this.byKey.get(key); return u ? this._public(u) : null; }
     byId(id) { const u = this.data.users[id]; return u ? this._public(u) : null; }
     isNameTaken(key) { return this.byKey.has(key); }
@@ -226,9 +228,15 @@ class AccountStore {
     }
 
     // Проверенный хозяин: статус выдаёт только администратор
-    async setVerified(key, value) {
+    async setVerified(key, value, kind = 'housing') {
         const u = this.byKey.get(key);
         if (!u) return false;
+        if (kind !== 'housing') {
+            if (kind !== 'trips' && kind !== 'services') return false;
+            const had = u.verifs; u.verifs = Object.assign({}, had, { [kind]: !!value });
+            try { await this.file.save(this.data); } catch (e) { u.verifs = had; return false; }
+            return true;
+        }
         const prev = !!u.verified;
         u.verified = !!value;
         if (u.verified) delete u.verifyRequest;
@@ -268,7 +276,7 @@ class AccountStore {
         return Object.values(this.data.users)
             .filter(u => !q || u.name.toLowerCase().includes(q))
             .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 200)
-            .map(u => ({ id: u.id, name: u.name, verified: !!u.verified, banned: !!u.banned, created: u.createdAt || 0,
+            .map(u => ({ id: u.id, name: u.name, verified: !!u.verified, verifs: this._verifs(u), banned: !!u.banned, created: u.createdAt || 0,
                          request: u.verifyRequest ? { note: u.verifyRequest.note, time: u.verifyRequest.time } : null }));
     }
 

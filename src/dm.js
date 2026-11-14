@@ -66,7 +66,9 @@ class DmStore {
             updated: c.updated,
             unread: vis.filter(m => m.from !== user.id && m.time > myRead).length,
             peerRead: (otherId && c.reads && c.reads[otherId]) || 0,
-            blockedByMe: this._blocked(user.id, otherId)
+            blockedByMe: this._blocked(user.id, otherId),
+            // разговор о жилье с хозяином, которого мы не проверили: в чате покажем предупреждение
+            hostUnverified: !!(iAmGuest && /^l_/.test(c.adId || '') && (() => { const o = this.accounts.findByKey(c.ownerKey); return o && !o.verified; })())
         };
     }
 

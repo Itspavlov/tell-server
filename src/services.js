@@ -73,7 +73,7 @@ class ServiceStore {
     _view(s, full) {
         const u = this.accounts.byId(s.ownerId);
         return {
-            id: s.id, ownerId: s.ownerId, ownerName: u ? u.name : s.ownerName, verified: !!(u && u.verified),
+            id: s.id, ownerId: s.ownerId, ownerName: u ? u.name : s.ownerName, verified: !!(u && u.verifs && u.verifs.services),
             created: s.created, updated: s.updated, title: s.title, text: full ? s.text : s.text.slice(0, 140), city: s.city,
             tag: s.tag, unit: s.unit, price: s.price, thumb: s.thumb || '', photoCount: s.photos.length,
             place: s.place || '', coords: s.coords || null,

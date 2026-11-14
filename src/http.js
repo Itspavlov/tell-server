@@ -178,7 +178,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!accounts) return res.status(404).json({ error: 'Not found' });
         const u = accounts.authenticate(bearer(req));
         if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED' });
-        res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified, avatar: accounts.avatarOf(u.id) } });
+        res.json({ ok: true, user: { id: u.id, name: u.name, verified: !!u.verified, verifs: u.verifs, avatar: accounts.avatarOf(u.id) } });
     }
 
     // Аватарки по именам: чтобы везде, где виден человек (чаты, комментарии, карточки), рядом была его картинка
@@ -247,11 +247,14 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (typeof b.name !== 'string' || typeof b.verified !== 'boolean') {
             return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD', message: 'Нужны name и verified (true/false)' });
         }
-        const ok = await accounts.setVerified(nameKey(b.name), b.verified);
+        const kind = b.kind === undefined ? 'housing' : b.kind;
+        if (kind !== 'housing' && kind !== 'trips' && kind !== 'services') return res.status(400).json({ ok: false, code: 'BAD_PAYLOAD', message: 'kind: housing, trips или services' });
+        const ok = await accounts.setVerified(nameKey(b.name), b.verified, kind);
         if (!ok) return res.status(404).json({ ok: false, code: 'NO_USER' });
-        await admin.audit('verify', { target: b.name.slice(0, 40), verified: b.verified, ip: ipOf(req) });
+        await admin.audit('verify', { target: b.name.slice(0, 40), verified: b.verified, kind, ip: ipOf(req) });
         const who = accounts.findByKey(nameKey(b.name));
-        if (notifier && who && b.verified) notifier.notify([who.id], { kind: 'verify', title: 'Вы проверенный хозяин', body: 'Теперь вы можете размещать жильё: Профиль → «Добавить жильё»', open: 'profile', tag: 'verify' });
+        const KIND_TITLE = { housing: 'Вы проверенный хозяин', trips: 'Вы проверенный водитель', services: 'Ваши развлечения проверены' };
+        if (notifier && who && b.verified) notifier.notify([who.id], { kind: 'verify', title: KIND_TITLE[kind], body: 'Рядом с вашими публикациями появится значок «Проверен»: вам будут больше доверять', open: 'profile', tag: 'verify-' + kind });
         res.json({ ok: true });
     }
 

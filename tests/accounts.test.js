@@ -196,6 +196,27 @@ test('личные сообщения: без входа нельзя', async ()
     await store.close();
 });
 
+test('диалог о жилье: гостю помечается непроверенный хозяин, хозяину и чужим темам — нет', async () => {
+    const { accounts, connect, store } = await setup();
+    const tg = (await accounts.register('Гость', PW)).token;
+    const to = (await accounts.register('Хозяйка', PW)).token;
+    const g = connect(tg), o = connect(to);
+    const AD = 'l_0123456789abcdef';
+    let r = await call(g, 'dm-open', { ownerName: 'Хозяйка', adId: AD, adTitle: 'Дом' });
+    assert.equal(r.ok, true);
+    assert.equal(r.conv.hostUnverified, true, 'гость видит предупреждение');
+    const hostSide = await call(o, 'dm-history', { convId: r.conv.id });
+    assert.equal(hostSide.conv.hostUnverified, false, 'хозяйке предупреждение не нужно');
+    // объявление не про жильё (запрос, поездка): предупреждения нет
+    const other = await call(g, 'dm-open', { ownerName: 'Хозяйка', adId: 'req_abcdef', adTitle: 'Поездка' });
+    assert.equal(other.conv.hostUnverified, false);
+    // после проверки предупреждение пропадает
+    assert.equal(await accounts.setVerified(nameKey('Хозяйка'), true), true);
+    r = await call(g, 'dm-history', { convId: r.conv.id });
+    assert.equal(r.conv.hostUnverified, false);
+    await store.close();
+});
+
 test('личные сообщения: гость пишет хозяину, хозяин видит и отвечает, рассылка только им', async () => {
     const { accounts, connect, io, store } = await setup();
     const tg = (await accounts.register('Гость', PW)).token;

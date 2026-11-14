@@ -84,7 +84,7 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
             return true;
         }
 
-        socket.emit('server-hello', { protocol: 2, user: account ? { id: account.id, name: account.name, verified: !!account.verified } : null });
+        socket.emit('server-hello', { protocol: 2, user: account ? { id: account.id, name: account.name, verified: !!account.verified, verifs: account.verifs } : null });
 
         socket.onAny((event) => {
             if (!KNOWN_EVENTS.has(event)) violation('unknown-event');

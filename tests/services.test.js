@@ -42,6 +42,18 @@ test('услуга: проверка полей, фото и лимиты', asyn
     await store.close();
 });
 
+test('услуга: значок «проверен» даёт проверка развлечений, а не проверка жилья', async () => {
+    const { services, accounts, reg, store } = await setup();
+    const a = await reg('Анна', true);                       // проверена как хозяйка жилья
+    await services.save(a, SV());
+    assert.equal(services.list({ ownerId: a.id })[0].verified, false);
+    assert.equal(await accounts.setVerified(nameKey('Анна'), true, 'services'), true);
+    assert.equal(services.list({ ownerId: a.id })[0].verified, true);
+    assert.equal(await accounts.setVerified(nameKey('Анна'), false, 'services'), true);
+    assert.equal(services.list({ ownerId: a.id })[0].verified, false);
+    await store.close();
+});
+
 test('услуга: видят все, менять может только автор, список лёгкий', async () => {
     const { services, reg, store } = await setup();
     const a = await reg('Анна'), b = await reg('Борис');

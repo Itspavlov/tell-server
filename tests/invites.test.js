@@ -129,10 +129,10 @@ test('HTTP: объявления и услуги упираются в лими�
     const s2 = res(); await h.serviceSave(req({ headers: a.hdr, ip: '8.8.8.2', body: SVC(2) }), s2);
     assert.equal(s2.code, 429); assert.match(s2.body.message, /Развлечения/);
 
-    // неподтверждённый хозяин: объявление не создаётся и лимит не тратится
+    // непроверенный хозяин тоже может разместить объявление, лимит раздела считается как у всех
     const c = await reg('Вера', false);
-    r = await saveAd(h, c, 1); assert.equal(r.body.code, 'NOT_VERIFIED');
-    assert.equal(invites.quota(c.id, 'housing').used, 0);
+    r = await saveAd(h, c, 1); assert.equal(r.code, 200); assert.equal(r.body.listing.isVerified, false);
+    assert.equal(invites.quota(c.id, 'housing').used, 1);
 
     // запросы: раздел «Работа» отдельно от «Жильё»
     r = await postReq(h, a, { section: 'work', kind: 'seek', title: 'Ищу работу' }); assert.equal(r.code, 200);

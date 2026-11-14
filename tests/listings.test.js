@@ -152,16 +152,37 @@ test('объявления переживают перезапуск; повре
     assert.equal(fs.readFileSync(f, 'utf-8'), '{"listings": ');
 });
 
-test('объявление: непроверенный не может разместить; после проверки может, значок виден', async () => {
+test('объявление: размещать может любой; у непроверенного значка нет, после проверки он появляется', async () => {
     const { h, regRaw, accounts, store } = await setup();
     const u = await regRaw('Новичок');
     let r = res(); await h.listingSave(req({ headers: auth(u.token), body: { ad: AD(), profile: PROFILE } }), r);
-    assert.equal(r.code, 403);
-    assert.equal(r.body.code, 'NOT_VERIFIED');
+    assert.equal(r.code, 200);
+    assert.equal(r.body.listing.isVerified, false);
+    const id = r.body.listing.id;
     assert.equal(await accounts.setVerified(nameKey('Новичок'), true), true);
-    r = res(); await h.listingSave(req({ headers: auth(u.token), body: { ad: AD(), profile: PROFILE } }), r);
+    r = res(); await h.listingSave(req({ headers: auth(u.token), body: { id, ad: AD(), profile: PROFILE } }), r);
     assert.equal(r.code, 200);
     assert.equal(r.body.listing.isVerified, true);
+    await store.close();
+});
+
+test('три вида проверки: жильё, поездки, развлечения выдаются раздельно и видны в профиле', async () => {
+    const { regRaw, accounts, store } = await setup();
+    const u = await regRaw('Водитель');
+    const key = nameKey('Водитель');
+    let me = accounts.authenticate(u.token);
+    assert.deepEqual(me.verifs, { housing: false, trips: false, services: false });
+    assert.equal(await accounts.setVerified(key, true, 'trips'), true);
+    me = accounts.authenticate(u.token);
+    assert.deepEqual(me.verifs, { housing: false, trips: true, services: false });
+    assert.equal(me.verified, false);                       // «проверенный хозяин» — это только жильё
+    assert.equal(await accounts.setVerified(key, true, 'services'), true);
+    assert.equal(await accounts.setVerified(key, true), true);
+    assert.deepEqual(accounts.authenticate(u.token).verifs, { housing: true, trips: true, services: true });
+    assert.equal(await accounts.setVerified(key, false, 'trips'), true);
+    assert.equal(accounts.authenticate(u.token).verifs.trips, false);
+    assert.equal(await accounts.setVerified(key, true, 'что-то'), false);   // неизвестный вид не принимается
+    assert.equal(accounts.listUsers('Водитель')[0].verifs.services, true);
     await store.close();
 });
 
