@@ -225,3 +225,27 @@ test('запрос в личной группе: клиент шлёт толь�
     assert.match(open.group && (await call(a.sock, 'group-list')).groups[0].last.text, /Запрос/);
     await store.close();
 });
+
+const { PNG } = require('./helpers');
+
+test('фото группы: при создании, в списке и в деталях; чужое и мусор отклоняются', async () => {
+    const { user, store } = await setup();
+    const a = await user('Аня'), b = await user('Боря');
+    assert.equal((await call(a.sock, 'group-create', { name: 'Плохое фото', photo: 'data:image/png;base64,AAAA' })).code, 'IMAGE_INVALID');
+    assert.equal((await call(a.sock, 'group-create', { name: 'Большое', photo: 'data:image/png;base64,' + 'A'.repeat(100000) })).ok, false);
+    const r = await call(a.sock, 'group-create', { name: 'С фото', photo: PNG });
+    assert.equal(r.ok, true);
+    assert.equal(r.group.photo, PNG);
+    assert.equal((await call(a.sock, 'group-list')).groups[0].photo, PNG);
+    const plain = await call(a.sock, 'group-create', { name: 'Без фото' });
+    assert.equal(plain.group.photo, '');
+    // чужая группа: поменять нельзя
+    await call(a.sock, 'group-invite', { groupId: r.group.id, name: 'Боря' });
+    assert.equal((await call(b.sock, 'group-photo', { groupId: r.group.id, photo: PNG })).code, 'GROUP_NOT_OWNER');
+    // владелец меняет и убирает
+    assert.equal((await call(a.sock, 'group-photo', { groupId: plain.group.id, photo: PNG })).photo, PNG);
+    assert.equal((await call(a.sock, 'group-photo', { groupId: plain.group.id, photo: '' })).photo, '');
+    assert.equal((await call(a.sock, 'group-photo', { groupId: plain.group.id, photo: 'не картинка' })).code, 'IMAGE_INVALID');
+    assert.equal((await call(a.sock, 'group-photo', { groupId: 'g_нет', photo: PNG })).code, 'NO_GROUP');
+    await store.close();
+});

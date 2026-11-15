@@ -10,7 +10,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { JsonFile } = require('./jsonfile');
-const { normalizeName, normalizeText, fail, CLIENT_ID_RE, REACTIONS, MSG_ID_RE } = require('./validate');
+const { normalizeName, normalizeText, fail, CLIENT_ID_RE, REACTIONS, MSG_ID_RE, validateImage } = require('./validate');
 const { nameKey } = require('./accounts');
 
 const GROUP_MSG_CAP = 500;
@@ -18,6 +18,14 @@ const MAX_MEMBERS = 20;
 const MAX_GROUPS_PER_USER = 10;
 const AD_ID_RE = /^[\w-]{1,40}$/;
 const MAX_AD_IDS = 3000;
+const GROUP_PHOTO_BYTES = 60 * 1024;   // фото группы: маленький квадрат, клиент сжимает до 256 px
+
+// Фото группы: пустое значение — без фото; иначе проверенная картинка
+function cleanGroupPhoto(v) {
+    if (v === undefined || v === null || v === '') return { ok: true, value: '' };
+    const r = validateImage(v, GROUP_PHOTO_BYTES);
+    return r.ok ? { ok: true, value: r.value } : fail('IMAGE_INVALID');
+}
 
 function cleanAd(ad) {
     if (!ad || typeof ad !== 'object' || typeof ad.id !== 'string' || !AD_ID_RE.test(ad.id)) return null;
@@ -77,7 +85,7 @@ class GroupStore {
     _summary(user, g) {
         const last = g.messages[g.messages.length - 1];
         return {
-            id: g.id, name: g.name, members: g.members.length, isOwner: g.ownerId === user.id,
+            id: g.id, name: g.name, photo: g.photo || '', members: g.members.length, isOwner: g.ownerId === user.id,
             last: last ? { text: last.req ? '🔎 Запрос: ' + (last.req.city || 'жильё') : last.ad ? '🏠 ' + last.ad.title : (last.video ? 'Видеосообщение' : (last.voice ? 'Голосовое сообщение' : last.text.slice(0, 80))), time: last.time, from: (this.accounts.byId(last.from) || { name: '' }).name } : null,
             updated: g.updated
         };
@@ -97,9 +105,11 @@ class GroupStore {
         };
     }
 
-    async create(user, rawName) {
+    async create(user, rawName, rawPhoto) {
         const t = normalizeText(typeof rawName === 'string' ? rawName : '', 40);
         if (!t.ok || t.value.length < 2) return fail('BAD_GROUP_NAME');
+        const ph = cleanGroupPhoto(rawPhoto);
+        if (!ph.ok) return ph;
         const mineCount = Object.values(this.data.groups).filter(g => g.members.includes(user.id)).length;
         if (mineCount >= MAX_GROUPS_PER_USER) return fail('TOO_MANY_GROUPS');
         const g = {
@@ -107,14 +117,29 @@ class GroupStore {
             members: [user.id], code: crypto.randomBytes(8).toString('hex'),
             created: this.now(), updated: this.now(), messages: []
         };
+        if (ph.value) g.photo = ph.value;
         this.data.groups[g.id] = g; this.byCode.set(g.code, g.id);
         try { await this._persist(() => { delete this.data.groups[g.id]; this.byCode.delete(g.code); }); }
         catch (e) { return fail('STORE_UNAVAILABLE'); }
         return { ok: true, group: this._detail(user, g) };
     }
 
+    // Сменить или убрать фото группы может только создатель
+    async setPhoto(user, id, rawPhoto) {
+        const g = this._get(user, id);
+        if (!g) return fail('NO_GROUP');
+        if (g.ownerId !== user.id) return fail('GROUP_NOT_OWNER');
+        const ph = cleanGroupPhoto(rawPhoto);
+        if (!ph.ok) return ph;
+        const prev = g.photo;
+        if (ph.value) g.photo = ph.value; else delete g.photo;
+        try { await this._persist(() => { if (prev) g.photo = prev; else delete g.photo; }); }
+        catch (e) { return fail('STORE_UNAVAILABLE'); }
+        return { ok: true, photo: g.photo || '', members: this.memberIds(g.id) };
+    }
+
     _detail(user, g) {
-        return { id: g.id, name: g.name, isOwner: g.ownerId === user.id, code: g.code, members: this._memberViews(g).map(m => ({ ...m, owner: m.id === g.ownerId })) };
+        return { id: g.id, name: g.name, photo: g.photo || '', isOwner: g.ownerId === user.id, code: g.code, members: this._memberViews(g).map(m => ({ ...m, owner: m.id === g.ownerId })) };
     }
 
     list(user) {

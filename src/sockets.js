@@ -24,7 +24,7 @@ const { cleanAd } = require('./groups');
 const KNOWN_EVENTS = new Set([
     'join-room', 'leave-room', 'send-message', 'react',
     'dm-open', 'dm-list', 'dm-history', 'dm-send', 'dm-react', 'dm-delete', 'dm-read', 'dm-block', 'dm-report',
-    'group-create', 'group-list', 'group-open', 'group-send', 'group-react',
+    'group-create', 'group-photo', 'group-list', 'group-open', 'group-send', 'group-react',
     'group-invite', 'group-join', 'group-leave', 'ad-reactions', 'ad-react'
 ]);
 
@@ -323,7 +323,17 @@ function createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, li
         socket.on('group-create', safe('group-create', async (d, ack) => {
             if (!needGroups(ack)) return;
             if (!limiters.groupCreate.hit(account.id).ok) return reply(ack, fail('RATE_LIMITED'));
-            reply(ack, await groups.create(account, d && d.name));
+            reply(ack, await groups.create(account, d && d.name, d && d.photo));
+        }));
+
+        socket.on('group-photo', safe('group-photo', async (d, ack) => {
+            if (!needGroups(ack)) return;
+            if (!limiters.groupCreate.hit(account.id).ok) return reply(ack, fail('RATE_LIMITED'));
+            if (!d || typeof d !== 'object') return reply(ack, fail('BAD_PAYLOAD'));
+            const res = await groups.setPhoto(account, d.groupId, d.photo);
+            if (!res.ok) return reply(ack, res);
+            tellMembers(res.members, 'group-members', { groupId: d.groupId, photo: res.photo });
+            reply(ack, { ok: true, photo: res.photo });
         }));
 
         socket.on('group-list', (ack) => {
