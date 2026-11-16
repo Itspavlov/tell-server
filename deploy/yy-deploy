@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Выкладка одной командой. Вызывается по SSH из GitHub Actions (ключ ограничен только этим скриптом):
+#   yy-deploy site     — обновить сайт (/var/www/tell)
+#   yy-deploy server   — обновить сервер приложения (/opt/tell-server)
+# При сбое после выкладки автоматически возвращается предыдущая версия.
+set -uo pipefail
+SITE_SRC=/root/gokurort-new;      SITE_ROOT=/var/www/tell
+SRV_SRC=/root/tell-server-git;    SRV_ROOT=/opt/tell-server
+SNAP=/var/backups/tell-code
+LOG=/var/log/yy-deploy.log
+mkdir -p "$SNAP"; exec > >(tee -a "$LOG") 2>&1
+echo "=== $(date -Is) ${1:-${SSH_ORIGINAL_COMMAND:-}}"
+cmd=${1:-${SSH_ORIGINAL_COMMAND:-}}
+fail() { echo "ОШИБКА: $*"; exit 1; }
+
+site() {
+  cd "$SITE_SRC" || fail "нет $SITE_SRC"
+  git fetch -q origin main && git reset -q --hard origin/main || fail "git"
+  local sha new prev; sha=$(git rev-parse --short HEAD); new="$SITE_ROOT.new"; prev="$SITE_ROOT.prev"
+  rm -rf "$new"; mkdir "$new"
+  git archive HEAD | tar -x -C "$new" || fail "архив"
+  node deploy/stamp.js "$new" "$sha" || { rm -rf "$new"; fail "подстановка версий"; }
+  rm -rf "$new/.github" "$new/deploy"
+  [ -f "$new/index.html" ] && [ -f "$new/app.js" ] || { rm -rf "$new"; fail "в сборке нет index.html/app.js"; }
+  chmod -R a+rX "$new"; echo "$sha" > "$new/version.txt"
+  rm -rf "$prev"; mv "$SITE_ROOT" "$prev" && mv "$new" "$SITE_ROOT" || fail "подмена папки"
+  if curl -fsS -m 15 -o /dev/null https://yugiyugi.ru/ && curl -fsS -m 15 https://yugiyugi.ru/version.txt | grep -q "$sha"; then
+    echo "OK сайт $sha"
+  else
+    echo "Сайт не отвечает — откат"; rm -rf "$SITE_ROOT.bad"; mv "$SITE_ROOT" "$SITE_ROOT.bad"; mv "$prev" "$SITE_ROOT"; exit 1
+  fi
+}
+
+server() {
+  cd "$SRV_SRC" || fail "нет $SRV_SRC"
+  git fetch -q origin main && git reset -q --hard origin/main || fail "git"
+  local sha; sha=$(git rev-parse --short HEAD)
+  tar -C "$SRV_ROOT" -czf "$SNAP/prev.tgz" src server.js package.json package-lock.json scripts 2>/dev/null || fail "снимок прошлой версии"
+  local pkgold; pkgold=$(sha1sum "$SRV_ROOT/package.json" | cut -d' ' -f1)
+  cp -r src scripts "$SRV_ROOT/" && cp server.js package.json "$SRV_ROOT/"; [ -f package-lock.json ] && cp package-lock.json "$SRV_ROOT/"
+  if [ "$pkgold" != "$(sha1sum "$SRV_ROOT/package.json" | cut -d' ' -f1)" ]; then
+    echo "зависимости изменились — npm ci"; (cd "$SRV_ROOT" && npm ci --omit=dev) || echo "npm ci не удался"
+  fi
+  systemctl restart tell; local i ok=0
+  for i in 1 2 3 4 5 6 7 8 9 10; do sleep 2; curl -fsS -m 5 http://127.0.0.1:3000/readyz >/dev/null 2>&1 && { ok=1; break; }; done
+  if [ $ok = 1 ]; then echo "OK сервер $sha"; echo "$sha" > "$SNAP/current.txt"; else
+    echo "Сервер не поднялся — откат"; rm -rf "$SRV_ROOT/src"; tar -C "$SRV_ROOT" -xzf "$SNAP/prev.tgz"; systemctl restart tell; sleep 4
+    curl -fsS -m 5 http://127.0.0.1:3000/readyz >/dev/null 2>&1 && echo "прежняя версия восстановлена" || echo "ВНИМАНИЕ: и прежняя версия не отвечает"; exit 1
+  fi
+}
+
+case "$cmd" in
+  site) site ;;
+  server) server ;;
+  *) echo "команды: site | server"; exit 2 ;;
+esac
