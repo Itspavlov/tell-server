@@ -30,6 +30,16 @@ test('плохой запрос, выключенный геокодер, оши
 });
 
 
+test('ключ, ограниченный по сайту: сервер шлёт Referer', async () => {
+    let seen = null;
+    const g = new Geocoder({ apiKey: 'K', referer: 'https://example.test/', fetchImpl: async (u, o) => { seen = o.headers; return { ok: true, json: async () => yaBody(38.5, 44.3, 'x') }; } });
+    await g.find('ленина 1');
+    assert.equal(seen.Referer, 'https://example.test/');
+    seen = null;
+    await new Geocoder({ apiKey: 'K', fetchImpl: async (u, o) => { seen = o.headers; return { ok: true, json: async () => yaBody(38.5, 44.3, 'x') }; } }).find('ленина 1');
+    assert.equal('Referer' in seen, false);
+});
+
 // ---- HTTP-обработчик ----
 const os = require('node:os'), path = require('node:path'), fs = require('node:fs');
 const { createHandlers } = require('../src/http');

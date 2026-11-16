@@ -91,7 +91,7 @@ async function start(env = process.env, logger = console) {
 
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
-    const geocoder = new Geocoder({ apiKey: cfg.yandexGeocoderKey, logger });
+    const geocoder = new Geocoder({ apiKey: cfg.yandexGeocoderKey, referer: cfg.yandexGeocoderReferer || ((cfg.allowedOrigins || [])[0] ? cfg.allowedOrigins[0] + '/' : ''), logger });
     const mailer = createMailer(cfg.mail, { logger });
     logger.info(`Почта (коды восстановления): ${mailer.enabled ? 'включена' : 'выключена (нет SMTP_HOST/SMTP_USER/SMTP_PASS)'}`);
 

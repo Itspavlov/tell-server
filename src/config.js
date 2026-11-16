@@ -78,6 +78,8 @@ function loadConfig(env = process.env) {
         adminToken,
         // Ключ «HTTP Геокодера» Яндекса: только на сервере, в клиент не попадает. Пусто — поиск адреса выключен.
         yandexGeocoderKey: (env.YANDEX_GEOCODER_KEY || '').trim(),
+        // Если ключ ограничен по сайту (HTTP Referer), сервер называет этот адрес. По умолчанию — первый разрешённый сайт.
+        yandexGeocoderReferer: (env.YANDEX_GEOCODER_REFERER || '').trim(),
         vapid: Object.freeze({ publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || '' }),
 
         limits: Object.freeze({
