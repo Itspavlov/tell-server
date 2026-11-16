@@ -200,6 +200,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await accounts.setAvatar(u.id, b.avatar);
         if (!r.ok) return res.status(r.code === 'SERVER_ERROR' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
         res.json({ ok: true, avatar: r.avatar });
+        // остальным — сразу: аватарка и имя и так публичны (/api/avatars), так что в событии ничего нового
+        if (io && typeof io.emit === 'function') io.emit('avatar-changed', { name: u.name, avatar: r.avatar || '' });
     }
 
     // ---------- push-уведомления ----------
@@ -724,6 +726,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             if (!seen[r.ownerId]) seen[r.ownerId] = { avatar: accounts.avatarOf(r.ownerId), online: !!(notifier && notifier.isOnline && notifier.isOnline(r.ownerId)), seen: accounts.lastSeenOf(r.ownerId) };
             const o = seen[r.ownerId];
             r.ownerAvatar = o.avatar; r.ownerOnline = o.online; r.ownerSeen = o.seen;
+            if (r.section) r.ownerVerified = accounts.verifiedOf(r.ownerId, r.section);
         });
         return list;
     }

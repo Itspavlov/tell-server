@@ -511,3 +511,30 @@ test('запросы: у карточки есть аватарка и стат�
     const r3 = res(); hh.requestsList(req({}), r3);
     assert.equal(typeof r3.body.requests[0].ownerAvatar, 'string');
 });
+
+test('карточки поездок: ownerVerified только при проверке именно поездок', async () => {
+    const { requests, reg, accounts, cfg } = await setup();
+    const a = await reg('Анна'), b = await reg('Борис');
+    await requests.create(a, REQ({ section: 'trips', kind: 'offer', category: 'trip', title: 'Анапа — Краснодар' }));
+    const hh = createHandlers({ cfg, store: null, admin: null, accounts, listings: null, requests, limiters: limiters(cfg), io: makeIo(), notifier: null, logger: silent });
+    const get = () => { const r = res(); hh.requestsList(req({ headers: { authorization: 'Bearer ' + b.token } }), r); return r.body.requests.find(x => x.section === 'trips'); };
+    const first = get();
+    assert.ok(first, 'карточка поездки есть');
+    assert.equal(first.ownerVerified, false);
+    await accounts.setVerified(nameKey('Анна'), true, 'services');   // проверка развлечений поездкам не помогает
+    assert.equal(get().ownerVerified, false);
+    await accounts.setVerified(nameKey('Анна'), true, 'trips');
+    assert.equal(get().ownerVerified, true);
+});
+
+test('смена аватарки: всем уходит событие avatar-changed', async () => {
+    const { reg, accounts, cfg } = await setup();
+    const a = await reg('Анна');
+    const io = makeIo();
+    const hh = createHandlers({ cfg, store: null, admin: null, accounts, listings: null, requests: null, limiters: limiters(cfg), io, notifier: null, logger: silent });
+    const r = res(); await hh.setAvatar(req({ headers: { authorization: 'Bearer ' + a.token }, body: { avatar: 'av07' } }), r);
+    assert.equal(r.body.ok, true);
+    const ev = io.emitted.find(e => e.ev === 'avatar-changed');
+    assert.ok(ev, 'событие отправлено');
+    assert.deepEqual(ev.payload, { name: 'Анна', avatar: 'av07' });
+});

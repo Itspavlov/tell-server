@@ -81,6 +81,12 @@ class AccountStore {
     byId(id) { const u = this.data.users[id]; return u ? this._public(u) : null; }
     isNameTaken(key) { return this.byKey.has(key); }
 
+    // Проверен ли человек для раздела: жильё, поездки, развлечения (у «работы» проверки нет)
+    verifiedOf(id, section) {
+        const u = this.data.users[id]; if (!u) return false;
+        const v = this._verifs(u);
+        return section === 'housing' ? v.housing : section === 'trips' ? v.trips : section === 'services' ? v.services : false;
+    }
     // Аватарка: только id готовой картинки (av01…av35), пустая строка — без аватарки
     avatarOf(id) { const u = this.data.users[id]; return u && u.avatar ? u.avatar : ''; }
     // Аватарки по именам (для чатов и карточек): имя → id готовой картинки; тем, у кого её нет, места в ответе нет
