@@ -9,8 +9,9 @@ const CENTER = { lat: 44.3667, lng: 38.5333 };          // Архипо-Осип
 const norm = (q) => String(q || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 
 class Geocoder {
-    constructor({ apiKey, fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 5000, ttlMs = DAY, maxEntries = 2000, logger = console }) {
+    constructor({ apiKey, referer = '', fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 5000, ttlMs = DAY, maxEntries = 2000, logger = console }) {
         this.apiKey = apiKey || '';
+        this.referer = referer || '';                    // ключ в кабинете Яндекса может быть ограничен по сайту: тогда шлём его адрес
         this.fetch = fetchImpl; this.now = now; this.timeoutMs = timeoutMs; this.ttlMs = ttlMs; this.maxEntries = maxEntries; this.logger = logger;
         this.cache = new Map();                          // ключ -> { at, value }
     }
@@ -32,7 +33,7 @@ class Geocoder {
         const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
         let value;
         try {
-            const r = await this.fetch(url, { signal: ctl.signal });
+            const r = await this.fetch(url, { signal: ctl.signal, headers: this.referer ? { Referer: this.referer } : {} });
             if (!r.ok) { this.logger.warn?.('geocode: ответ ' + r.status); return { ok: false, code: 'GEOCODER_FAILED' }; }   // ошибки не кэшируем
             const j = await r.json();
             const m = j && j.response && j.response.GeoObjectCollection && j.response.GeoObjectCollection.featureMember[0];
