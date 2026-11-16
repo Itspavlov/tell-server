@@ -76,6 +76,8 @@ function loadConfig(env = process.env) {
         }),
         dataDir: env.DATA_DIR ? path.resolve(env.DATA_DIR) : path.join(__dirname, '..', 'data'),
         adminToken,
+        // Ключ «HTTP Геокодера» Яндекса: только на сервере, в клиент не попадает. Пусто — поиск адреса выключен.
+        yandexGeocoderKey: (env.YANDEX_GEOCODER_KEY || '').trim(),
         vapid: Object.freeze({ publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || '' }),
 
         limits: Object.freeze({
@@ -102,6 +104,7 @@ function loadConfig(env = process.env) {
 
         rates: Object.freeze({
             msgPerSocket: { windowMs: 10_000, max: 10 },
+            geocodeIp: { windowMs: 60_000, max: 10 },
             msgPerIp: { windowMs: 60_000, max: 60 },
             imgPerIp: { windowMs: 60_000, max: 6 },
             joinPerSocket: { windowMs: 10_000, max: 20 },

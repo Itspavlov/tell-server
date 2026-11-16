@@ -9,7 +9,7 @@ const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -1157,6 +1157,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
     }
 
     // ---------- погода в шапке ----------
+    // Поиск адреса для карты: ключ Яндекса остаётся на сервере. Лимит по IP, кэш внутри geocoder.
+    async function geocodeGet(req, res) {
+        if (!geocoder || !geocoder.enabled) return res.status(404).json({ ok: false, code: 'GEOCODER_OFF' });
+        const rl = limiters.geocode.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const out = await geocoder.find(req.query && req.query.q);
+        res.set('Cache-Control', 'no-store');
+        res.status(out.ok || out.code === 'NOT_FOUND' ? 200 : out.code === 'BAD_QUERY' ? 400 : 502).json(out);
+    }
     function weatherGet(req, res) {
         if (!weather) return res.status(404).json({ error: 'Not found' });
         res.set('Cache-Control', 'public, max-age=300');
@@ -1408,15 +1417,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1457,6 +1466,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.delete('/api/admin/requests/:id', h.adminDeleteRequest);
     app.get('/api/admin/audit', h.adminAudit);
     app.get('/api/weather', h.weatherGet);
+    app.get('/api/geocode', h.geocodeGet);
     app.use('/api', h.supportGuard);
     app.get('/api/admin/weather', h.adminWeatherGet);
     app.post('/api/admin/weather', express.json({ limit: '1kb' }), h.adminWeatherSet);

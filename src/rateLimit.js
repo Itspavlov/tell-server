@@ -51,6 +51,7 @@ function createLimiters(rates, now) {
     const make = (r) => new RateLimiter({ ...r, now });
     return {
         msgSocket: make(rates.msgPerSocket),
+        geocode: make(rates.geocodeIp || { windowMs: 60_000, max: 10 }),
         msgIp: make(rates.msgPerIp),
         imgIp: make(rates.imgPerIp),
         joinSocket: make(rates.joinPerSocket),
