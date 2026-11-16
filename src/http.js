@@ -942,16 +942,18 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const r = limiters.history.hit(ipOf(req));
         if (!r.ok) return limited(res, r);
-        res.json({ ok: true, listings: hideFor('listing', listings.list(), reports && reports.hiddenIds('listing').size ? viewerOf(req) : null) });
+        const pg = listings.page({ limit: req.query.limit, before: req.query.before });
+        res.json({ ok: true, listings: hideFor('listing', pg.listings, reports && reports.hiddenIds('listing').size ? viewerOf(req) : null), next: pg.next, total: pg.total });
     }
 
     function listingGet(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const r = limiters.history.hit(ipOf(req));
         if (!r.ok) return limited(res, r);
-        const l = listings.get(req.params.id);
+        const lite = req.query.lite === '1';   // карточка для ленты: без полной версии и без счёта просмотра
+        const l = listings.get(req.params.id, !lite);
         if (!l || hiddenFrom('listing', l, reports && reports.isHidden('listing', l.id) ? viewerOf(req) : null)) return res.status(404).json({ ok: false, code: 'LISTING_NOT_FOUND' });
-        if (stats) {
+        if (stats && !lite) {
             const viewer = accounts && accounts.authenticate(bearer(req));
             if (!viewer || viewer.id !== l.ownerId) stats.view(l.id, viewer ? viewer.id : 'ip:' + ipOf(req));
         }

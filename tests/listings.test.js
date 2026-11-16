@@ -253,3 +253,19 @@ test('чаты жилья по категориям существуют на с
     const { ROOMS } = require('../src/config');
     for (const r of ['housing', 'housing-apartment', 'housing-house', 'housing-hotel', 'housing-room', 'housing-guest']) assert.ok(ROOMS.includes(r), r);
 });
+
+test('page: курсор отдаёт всё без потерь и сообщает next', () => {
+    const Listings = ListingStore;
+    const L = Object.create(Listings.prototype);
+    L.data = { listings: {} };
+    for (let i = 0; i < 5; i++) L.data.listings['l' + i] = { id: 'l' + i, updated: 100 + i };
+    L._compose = (l) => ({ id: l.id, updated: l.updated });
+    const p1 = L.page({ limit: 2 });
+    assert.deepEqual(p1.listings.map(x => x.id), ['l4', 'l3']);
+    assert.equal(p1.total, 5);
+    const p2 = L.page({ limit: 2, before: p1.next });
+    assert.deepEqual(p2.listings.map(x => x.id), ['l2', 'l1']);
+    const p3 = L.page({ limit: 2, before: p2.next });
+    assert.deepEqual(p3.listings.map(x => x.id), ['l0']);
+    assert.equal(p3.next, null);
+});
