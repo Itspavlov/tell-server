@@ -54,6 +54,7 @@ test('после сообщения хозяину: отзыв создаётс�
     const r = await post(env, g.token, { rating: 4, text: 'Хорошо' });
     assert.equal(r.code, 200, JSON.stringify(r.body)); assert.equal(r.body.rating, 4); assert.equal(r.body.count, 1);
     assert.equal(env.notes.length, 1); assert.deepEqual(env.notes[0].ids, [env.host.user.id]); assert.equal(env.notes[0].p.kind, 'review');
+    assert.equal(env.notes[0].p.open, 'reviews:' + env.host.user.id, 'нажатие открывает отзывы в профиле хозяина');
     const g2 = await env.reg('Гость2'); await contact(env, g2);
     await post(env, g2.token, { rating: 5, text: '' });
     const one = env.listings.get(env.lid);

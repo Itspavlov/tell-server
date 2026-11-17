@@ -1075,7 +1075,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!l) return reviewFail(res, { code: 'LISTING_NOT_FOUND' });
         const r = await reviews.save(user, l, req.body);
         if (!r.ok) return reviewFail(res, r);
-        if (notifier && r.created) notifier.notify([l.ownerId], { kind: 'review', title: 'Новый отзыв: ' + '★'.repeat(r.review.rating), body: user.name + ' об объявлении «' + trunc(l.ad && l.ad.title, 50) + '»', open: 'listing:' + l.id, tag: 'review:' + l.id });
+        if (notifier && r.created) notifier.notify([l.ownerId], { kind: 'review', title: 'Новый отзыв: ' + '★'.repeat(r.review.rating), body: user.name + ' об объявлении «' + trunc(l.ad && l.ad.title, 50) + '»', open: 'reviews:' + l.ownerId, tag: 'review:' + l.id });
         res.json({ ok: true, review: r.review, rating: r.rating, count: r.count });
     }
 
@@ -1097,7 +1097,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await reviews.reply(user, req.params.id, req.body && req.body.text);
         if (!r.ok) return reviewFail(res, r);
         const rv = r.review;
-        if (notifier) notifier.notify([rv.authorId], { kind: 'review', title: 'Хозяин ответил на ваш отзыв', body: trunc(r.review.reply.text, 100), open: 'listing:' + rv.listingId, tag: 'review-reply:' + rv.id });
+        if (notifier) notifier.notify([rv.authorId], { kind: 'review', title: 'Хозяин ответил на ваш отзыв', body: trunc(r.review.reply.text, 100), open: 'reviews:' + user.id, tag: 'review-reply:' + rv.id });
         res.json({ ok: true, reply: rv.reply });
     }
 
