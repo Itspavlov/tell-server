@@ -37,14 +37,17 @@ server() {
   git fetch -q origin main && git reset -q --hard origin/main || fail "git"
   local sha; sha=$(git rev-parse --short HEAD)
   tar -C "$SRV_ROOT" -czf "$SNAP/prev.tgz" src server.js package.json package-lock.json scripts 2>/dev/null || fail "снимок прошлой версии"
-  local pkgold; pkgold=$(sha1sum "$SRV_ROOT/package.json" | cut -d' ' -f1)
+  local pkgold; pkgold=$(cat "$SRV_ROOT/package.json" "$SRV_ROOT/package-lock.json" 2>/dev/null | sha1sum | cut -d' ' -f1)
   cp -r src scripts "$SRV_ROOT/" && cp server.js package.json "$SRV_ROOT/"; [ -f package-lock.json ] && cp package-lock.json "$SRV_ROOT/"
-  if [ "$pkgold" != "$(sha1sum "$SRV_ROOT/package.json" | cut -d' ' -f1)" ]; then
+  if [ "$pkgold" != "$(cat "$SRV_ROOT/package.json" "$SRV_ROOT/package-lock.json" 2>/dev/null | sha1sum | cut -d' ' -f1)" ]; then
     echo "зависимости изменились — npm ci"; (cd "$SRV_ROOT" && npm ci --omit=dev) || echo "npm ci не удался"
   fi
   systemctl restart tell; local i ok=0
   for i in 1 2 3 4 5 6 7 8 9 10; do sleep 2; curl -fsS -m 5 http://127.0.0.1:3000/readyz >/dev/null 2>&1 && { ok=1; break; }; done
-  if [ $ok = 1 ]; then echo "OK сервер $sha"; echo "$sha" > "$SNAP/current.txt"; else
+  if [ $ok = 1 ]; then echo "OK сервер $sha"; echo "$sha" > "$SNAP/current.txt"
+    # новая версия самого скрипта подхватывается со следующего запуска
+    [ -f "$SRV_SRC/deploy/yy-deploy" ] && install -m 700 "$SRV_SRC/deploy/yy-deploy" /usr/local/bin/yy-deploy.new && mv -f /usr/local/bin/yy-deploy.new /usr/local/bin/yy-deploy
+  else
     echo "Сервер не поднялся — откат"; rm -rf "$SRV_ROOT/src"; tar -C "$SRV_ROOT" -xzf "$SNAP/prev.tgz"; systemctl restart tell; sleep 4
     curl -fsS -m 5 http://127.0.0.1:3000/readyz >/dev/null 2>&1 && echo "прежняя версия восстановлена" || echo "ВНИМАНИЕ: и прежняя версия не отвечает"; exit 1
   fi
