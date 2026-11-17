@@ -159,15 +159,20 @@ class ListingStore {
         return { used, limit, left: Math.max(0, limit - used), day };
     }
 
-    // Страница ленты: новые сверху. before — метка updated последнего полученного объявления.
+    // Страница ленты: новые сверху (при равных метках выше поднятое). before — id последнего полученного объявления.
     // next не null, если есть ещё страницы (раньше лишнее молча отрезалось на 200-м).
     page({ limit = 100, before = null } = {}) {
         const lim = Math.min(200, Math.max(1, Number(limit) || 100));
-        let all = Object.values(this.data.listings).sort((a, b) => b.updated - a.updated || (a.id < b.id ? -1 : 1));
+        let all = Object.values(this.data.listings).sort((a, b) =>
+            (b.updated - a.updated) || ((b.bumpedAt || 0) - (a.bumpedAt || 0)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
         const total = all.length;
-        if (before != null && Number.isFinite(Number(before))) all = all.filter(l => l.updated < Number(before));
+        if (typeof before === 'string' && before) {
+            const i = all.findIndex(l => l.id === before);
+            if (i >= 0) all = all.slice(i + 1);
+            else if (Number.isFinite(Number(before))) all = all.filter(l => l.updated < Number(before));
+        }
         const items = all.slice(0, lim);
-        const next = all.length > lim ? items[items.length - 1].updated : null;
+        const next = all.length > lim ? items[items.length - 1].id : null;
         return { listings: items.map(l => this._compose(l, false)), total, next };
     }
 

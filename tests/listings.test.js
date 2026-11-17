@@ -258,10 +258,10 @@ test('page: курсор отдаёт всё без потерь и сообща
     const Listings = ListingStore;
     const L = Object.create(Listings.prototype);
     L.data = { listings: {} };
-    for (let i = 0; i < 5; i++) L.data.listings['l' + i] = { id: 'l' + i, updated: 100 + i };
+    for (let i = 0; i < 5; i++) L.data.listings['l' + i] = { id: 'l' + i, updated: 100 + Math.min(i, 3) };
     L._compose = (l) => ({ id: l.id, updated: l.updated });
     const p1 = L.page({ limit: 2 });
-    assert.deepEqual(p1.listings.map(x => x.id), ['l4', 'l3']);
+    assert.deepEqual(p1.listings.map(x => x.id), ['l3', 'l4']);   // равные метки: порядок по id, ничего не теряется
     assert.equal(p1.total, 5);
     const p2 = L.page({ limit: 2, before: p1.next });
     assert.deepEqual(p2.listings.map(x => x.id), ['l2', 'l1']);

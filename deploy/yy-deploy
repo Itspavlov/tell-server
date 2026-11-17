@@ -4,6 +4,7 @@
 #   yy-deploy server   — обновить сервер приложения (/opt/tell-server)
 # При сбое после выкладки автоматически возвращается предыдущая версия.
 set -uo pipefail
+umask 022   # файлы должны читаться пользователем tell, под которым работает сервис
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 SITE_SRC=/root/gokurort-new;      SITE_ROOT=/var/www/tell
 SRV_SRC=/root/tell-server-git;    SRV_ROOT=/opt/tell-server
@@ -40,7 +41,7 @@ server() {
   local pkgold; pkgold=$(cat "$SRV_ROOT/package.json" "$SRV_ROOT/package-lock.json" 2>/dev/null | sha1sum | cut -d' ' -f1)
   cp -r src scripts "$SRV_ROOT/" && cp server.js package.json "$SRV_ROOT/"; [ -f package-lock.json ] && cp package-lock.json "$SRV_ROOT/"
   if [ "$pkgold" != "$(cat "$SRV_ROOT/package.json" "$SRV_ROOT/package-lock.json" 2>/dev/null | sha1sum | cut -d' ' -f1)" ]; then
-    echo "зависимости изменились — npm ci"; (cd "$SRV_ROOT" && npm ci --omit=dev) || echo "npm ci не удался"
+    echo "зависимости изменились — npm ci"; (cd "$SRV_ROOT" && npm ci --omit=dev) || echo "npm ci не удался"; chmod -R a+rX "$SRV_ROOT/node_modules" "$SRV_ROOT/src" "$SRV_ROOT/scripts" "$SRV_ROOT/server.js" "$SRV_ROOT/package.json" 2>/dev/null
   fi
   systemctl restart tell; local i ok=0
   for i in 1 2 3 4 5 6 7 8 9 10; do sleep 2; curl -fsS -m 5 http://127.0.0.1:3000/readyz >/dev/null 2>&1 && { ok=1; break; }; done
