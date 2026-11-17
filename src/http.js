@@ -630,12 +630,14 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             if (!r.ok) { await telegram.answer(cq.id, 'Не удалось'); return; }
             if (notifier && ownerId) notifier.notify([ownerId], { kind: 'listing', title: 'Публикация одобрена', body: 'Её теперь видят все. Следующие публикации появятся сразу.' });
             if (kind === 'listing') io.emit('listing-changed', { id });
+            if (kind === 'request') io.emit('request-changed', { id });
             note = '✅ Одобрено, автор теперь доверенный';
         } else {
             let r = { ok: false };
             if (kind === 'listing' && listings) { r = await listings.removeAny(id); if (r.ok) { if (reviews) await reviews.dropListing(id); io.emit('listing-changed', { id, removed: true }); } }
             else if (kind === 'service' && services) r = await services.remove(null, id, { admin: true });
-            if (!r.ok && r.code !== 'LISTING_NOT_FOUND' && r.code !== 'SERVICE_NOT_FOUND') { await telegram.answer(cq.id, 'Не удалось удалить'); return; }
+            else if (kind === 'request' && requests) { const before = photosOf(id); r = await requests.removeAny(id); if (r.ok) { dropPhotos(before); io.emit('request-changed', { id, removed: true }); } }
+            if (!r.ok && r.code !== 'LISTING_NOT_FOUND' && r.code !== 'SERVICE_NOT_FOUND' && r.code !== 'REQUEST_NOT_FOUND') { await telegram.answer(cq.id, 'Не удалось удалить'); return; }
             await reports.drop(kind, id);
             if (notifier && ownerId) notifier.notify([ownerId], { kind: 'listing', title: 'Публикация не прошла проверку', body: 'Она не подходит для этого раздела. Правила: только жильё, работа, поездки и развлечения курорта.' });
             note = '🗑 Удалено';
@@ -661,7 +663,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             if (!cq || typeof cq.data !== 'string') return;
             if (String(cq.from && cq.from.id) !== telegram.chatId()) { await telegram.answer(cq.id, 'Нет доступа'); return; }
             const parts = cq.data.split(':');
-            if (parts[0] === 'hok' || parts[0] === 'hno' || parts[0] === 'hban') { await tgHold(cq, parts[0], parts[1] === 's' ? 'service' : 'listing', parts[2]); return; }
+            if (parts[0] === 'hok' || parts[0] === 'hno' || parts[0] === 'hban') { await tgHold(cq, parts[0], parts[1] === 's' ? 'service' : parts[1] === 'r' ? 'request' : 'listing', parts[2]); return; }
             const [act, id] = parts;
             const rep = reports.data.items.find(x => x.id === id);
             if (!rep) { await telegram.answer(cq.id, 'Жалоба уже разобрана'); await telegram.finish(cq.message, '— уже разобрана'); return; }
@@ -881,10 +883,13 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await requests.create(user, req.body);
         if (!r.ok) { if (hold) hold.undo(); return requestFail(res, r); }
         if (invites) { await invites.flush(); await afterPublish(user); }
+        // Работа и Поездки: первая карточка нового автора ждёт модератора (запросы на жильё идут сразу: это туристы)
+        const rsec = sectionOf(req.body && req.body.section);
+        const held = (rsec === 'work' || rsec === 'trips') ? await holdForReview('request', r.request.id, user, { title: r.request.title || r.request.text, price: r.request.budget ? r.request.budget + ' ₽' : '', text: r.request.text, section: rsec, offer: r.request.kind === 'offer' }) : false;
         io.emit('request-changed', { id: r.request.id });
         const found = listings ? requests.countMatches(requests.data.requests[r.request.id], listings) : 0;
         const alike = listings ? requests.countSimilar(requests.data.requests[r.request.id], listings) : 0;
-        res.json({ ok: true, request: r.request, cooldown: r.cooldown, matches: found, similar: alike });
+        res.json({ ok: true, request: r.request, cooldown: r.cooldown, matches: found, similar: alike, ...(held ? { held: true, message: HOLD_MSG } : {}) });
     }
 
     function requestMatches(req, res) {
@@ -1059,11 +1064,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         try {
             if (!reports || !telegram || !telegram.enabled()) return false;
             if (reports.isTrusted(user.id)) return false;
-            if (accounts && accounts.verifiedOf && accounts.verifiedOf(user.id, kind === 'service' ? 'services' : 'housing')) return false;
+            if (accounts && accounts.verifiedOf && accounts.verifiedOf(user.id, kind === 'service' ? 'services' : kind === 'request' ? info.section : 'housing')) return false;
             if (!(await reports.hold(kind, id, user.id))) return false;
             let photo = '';
             if (kind === 'listing' && listings) { const raw = listings.rawById(id); photo = (raw && raw.ad && (raw.ad.thumb || (raw.ad.photos || [])[0])) || ''; }
-            telegram.notifyHold({ kind, id, title: info.title, price: info.price, text: info.text, ownerName: user.name, photo }).catch(() => {});
+            telegram.notifyHold({ kind, id, title: info.title, price: info.price, text: info.text, ownerName: user.name, photo, section: info.section, offer: info.offer }).catch(() => {});
             return true;
         } catch (e) { logger.warn?.(`holdForReview: ${e && e.message}`); return false; }
     }

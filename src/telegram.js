@@ -72,9 +72,10 @@ function createTelegram({ token = '', chatId = '', secret = '', fetchImpl = (typ
         // Первая карточка нового автора: модератору приходит текст (и фото) с кнопками «Одобрить / Удалить / Бан»
         async notifyHold(h) {
             if (!on) return null;
-            const kindWord = h.kind === 'service' ? 'услуга' : 'объявление (Жильё)';
+            const secName = { work: 'Работа', trips: 'Поездки' }[h.section] || '';
+            const kindWord = h.kind === 'service' ? 'услуга (Развлечения)' : h.kind === 'request' ? (h.offer ? 'объявление' : 'запрос') + ' (' + secName + ')' : 'объявление (Жильё)';
             const text = `🆕 <b>Новая публикация на проверке: ${esc(kindWord)}</b>\n«${esc(h.title)}»${h.price ? '\nЦена: ' + esc(h.price) : ''}\n${h.text ? esc(String(h.text).slice(0, 350)) + '\n' : ''}Автор: ${esc(h.ownerName)}\nПока вы не одобрите, её никто, кроме автора, не видит.`;
-            const k = h.kind === 'service' ? 's' : 'l';
+            const k = h.kind === 'service' ? 's' : h.kind === 'request' ? 'r' : 'l';
             const reply_markup = { inline_keyboard: [[{ text: '✅ Одобрить', callback_data: `hok:${k}:${h.id}` }, { text: '🗑 Удалить', callback_data: `hno:${k}:${h.id}` }], [{ text: '⛔ Удалить и забанить', callback_data: `hban:${k}:${h.id}` }]] };
             if (h.photo) {
                 const r = await callPhoto({ chat_id: String(chatId), caption: text.slice(0, 1000), parse_mode: 'HTML', reply_markup }, h.photo);

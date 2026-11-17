@@ -155,3 +155,29 @@ test('проверка перед показом: первая карточка 
     assert.equal(r.code, 200); assert.equal(r.body.held, undefined);
     await store.close();
 });
+
+test('проверка перед показом: первая карточка в «Работе» тоже ждёт одобрения, запрос на жильё идёт сразу', async () => {
+    const { RequestStore } = require('../src/requests');
+    const cfg = makeCfg();
+    const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
+    const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await requests.init();
+    const reports = new ReportStore({ dataDir: cfg.dataDir, logger: silent, hideAt: 3 }); await reports.init();
+    const store = await makeStore(cfg);
+    const admin = createAdmin({ token: '', dataDir: cfg.dataDir, logger: silent });
+    const sent = [];
+    const fakeFetch = async (url, o) => { sent.push({ url, body: typeof o.body === 'string' ? JSON.parse(o.body) : null }); return { json: async () => ({ ok: true }) }; };
+    const telegram = createTelegram({ token: 'T', chatId: '777', secret: 's', fetchImpl: fakeFetch, logger: silent });
+    const h = createHandlers({ cfg, store, admin, accounts, requests, reports, telegram, limiters: limiters(cfg), io: makeIo(), logger: silent });
+    let r = res(); await h.register(req({ ip: '8.8.8.3', body: { name: 'Работник', password: 'correct horse 9' } }), r);
+    const hdr = { authorization: 'Bearer ' + r.body.token };
+    r = res(); await h.requestCreate(req({ ip: '8.8.8.3', headers: hdr, body: { section: 'work', kind: 'offer', title: 'Нужен официант', city: 'Архипо-Осиповка', text: 'График 2/2' } }), r);
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.equal(r.body.held, true);
+    const id = r.body.request.id;
+    assert.ok(sent.some(s => s.body && JSON.stringify(s.body.reply_markup).includes('hok:r:' + id)));
+    r = res(); await h.requestsList(req({ query: { section: 'work' } }), r);
+    assert.equal((r.body.requests || []).some(x => x.id === id), false);
+    r = res(); await h.tgHook(req({ params: { secret: 's' }, body: { callback_query: { id: 'q', from: { id: 777 }, data: 'hno:r:' + id, message: { chat: { id: 777 }, message_id: 1, text: 'x' } } } }), r);
+    assert.equal(requests.data.requests[id], undefined, 'отклонённая удалена');
+    await store.close();
+});
