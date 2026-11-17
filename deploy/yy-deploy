@@ -4,6 +4,7 @@
 #   yy-deploy server   — обновить сервер приложения (/opt/tell-server)
 # При сбое после выкладки автоматически возвращается предыдущая версия.
 set -uo pipefail
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 SITE_SRC=/root/gokurort-new;      SITE_ROOT=/var/www/tell
 SRV_SRC=/root/tell-server-git;    SRV_ROOT=/opt/tell-server
 SNAP=/var/backups/tell-code
