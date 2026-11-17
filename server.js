@@ -93,7 +93,7 @@ async function start(env = process.env, logger = console) {
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
     const geocoder = new Geocoder({ apiKey: cfg.yandexGeocoderKey, referer: cfg.yandexGeocoderReferer || ((cfg.allowedOrigins || [])[0] ? cfg.allowedOrigins[0] + '/' : ''), logger });
-    const telegram = createTelegram({ token: process.env.TG_BOT_TOKEN || '', chatId: process.env.TG_CHAT_ID || '', secret: process.env.TG_WEBHOOK_SECRET || '', logger });
+    const telegram = createTelegram({ token: process.env.TG_BOT_TOKEN || '', chatId: process.env.TG_CHAT_ID || '', secret: process.env.TG_WEBHOOK_SECRET || '', siteUrl: process.env.SITE_URL || 'https://yugiyugi.ru', logger });
     logger.info(`Telegram для жалоб: ${telegram.enabled() ? 'включён' : 'выключен (нет TG_BOT_TOKEN, TG_CHAT_ID, TG_WEBHOOK_SECRET)'}`);
     const mailer = createMailer(cfg.mail, { logger });
     logger.info(`Почта (коды восстановления): ${mailer.enabled ? 'включена' : 'выключена (нет SMTP_HOST/SMTP_USER/SMTP_PASS)'}`);

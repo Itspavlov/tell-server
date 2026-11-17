@@ -80,3 +80,33 @@ test('Telegram: удалить по кнопке снимает услугу и 
     assert.ok(sent.some(s => s.url.endsWith('editMessageText')));
     await store.close();
 });
+
+test('Telegram: в сообщении о жалобе есть ссылка на объявление и кнопка «Открыть на сайте»', async () => {
+    const sent = [];
+    const fakeFetch = async (url, o) => { sent.push(JSON.parse(o.body)); return { json: async () => ({ ok: true }) }; };
+    const tg = createTelegram({ token: 'T', chatId: '1', secret: 's', fetchImpl: fakeFetch, siteUrl: 'https://example.ru/', logger: silent });
+    await tg.notifyReport({ id: 'cr_1', kind: 'listing', targetId: 'l_abc', title: 'Дом', ownerName: 'А', reporterName: 'Б', reason: 'spam' }, 1);
+    assert.match(sent[0].text, /https:\/\/example\.ru\/\?open=listing%3Al_abc/);
+    assert.equal(sent[0].reply_markup.inline_keyboard[0][0].url, 'https://example.ru/?open=listing%3Al_abc');
+    assert.match(sent[0].text, /example\.ru\/admin/);
+});
+
+test('HTTP: «Продам авто» в «Жилье» отклоняется на сервере (тело запроса — { ad, profile })', async () => {
+    const { ListingStore } = require('../src/listings');
+    const cfg = makeCfg();
+    const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
+    const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: { ...cfg.limits, dailyListings: 100 }, logger: silent }); await listings.init();
+    const store = await makeStore(cfg);
+    const admin = createAdmin({ token: '', dataDir: cfg.dataDir, logger: silent });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, limiters: limiters(cfg), io: makeIo(), logger: silent });
+    let r = res(); await h.register(req({ ip: '8.8.8.1', body: { name: 'Шутник', password: 'correct horse 9' } }), r);
+    assert.equal(r.code, 201);
+    await accounts.setVerified('шутник', true).catch(() => {});
+    const hdr = { authorization: 'Bearer ' + r.body.token };
+    const ad = { type: 'rent', category: 'house', title: 'Продам авто', priceNum: 800000, price: '800 000 ₽/сут', location: 'Архипо-Осиповка', description: 'Продам авто срочно', photos: [], facts: [], terms: [], amenities: [] };
+    r = res(); await h.listingSave(req({ ip: '8.8.8.1', headers: hdr, body: { ad, profile: {} } }), r);
+    assert.equal(r.code, 400);
+    assert.equal(r.body.code, 'CONTENT_REJECTED');
+    assert.equal(Object.keys(listings.data.listings).length, 0);
+    await store.close();
+});

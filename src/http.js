@@ -611,7 +611,10 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         // модератору в Telegram: сообщение с кнопками «Удалить / Бан автора / Оставить»
         if (telegram && telegram.enabled()) {
             const rep = reports.data.items.find(x => x.id === r.id);
-            if (rep) telegram.notifyReport(rep, reports.count(rep.kind, rep.targetId)).catch(() => {});
+            if (rep) {
+                const rq = rep.kind === 'request' && requests ? requests.data.requests[rep.targetId] : null;
+                telegram.notifyReport(rep, reports.count(rep.kind, rep.targetId), { section: rq && rq.section }).catch(() => {});
+            }
         }
     }
 
@@ -1021,7 +1024,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!rl.ok) return limited(res, rl);
         const isNewAd = !(req.body && typeof req.body.id === 'string' && req.body.id);
         {   // явный мусор («продам машину» в «Жилье», мат, спам, нереальная цена) не публикуем
-            const b = req.body && typeof req.body === 'object' ? req.body : {};
+            const b = req.body && req.body.ad && typeof req.body.ad === 'object' ? req.body.ad : {};   // объявление лежит в body.ad
             const long = Array.isArray(b.terms) && b.terms.some(t => t && t.l === 'Срок аренды' && /длит/i.test(String(t.v || '')));
             const c = checkContent('housing', { title: b.title, text: b.description, priceNum: b.priceNum, long });
             if (!c.ok) return res.status(400).json(c);
