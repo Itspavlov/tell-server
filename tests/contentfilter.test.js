@@ -110,3 +110,10 @@ test('HTTP: «Продам авто» в «Жилье» отклоняется �
     assert.equal(Object.keys(listings.data.listings).length, 0);
     await store.close();
 });
+
+test('фильтр: слова с окончаниями («Автомобиль honda», «быстрые деньги») тоже ловятся', () => {
+    assert.equal(checkContent('housing', { title: 'Автомобиль honda', text: '', priceNum: 150000 }).ok, false);
+    assert.equal(checkContent('housing', { title: 'Продаю машины', text: '', priceNum: 3000 }).ok, false);
+    assert.equal(checkContent('work', { title: 'Быстрые деньги онлайн', text: '' }).reason, 'spam');
+    assert.equal(checkContent('trips', { title: 'Еду на автомобиле в Краснодар', text: '' }).ok, true);
+});
