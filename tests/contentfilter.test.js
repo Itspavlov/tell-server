@@ -117,3 +117,41 @@ test('фильтр: слова с окончаниями («Автомобиль
     assert.equal(checkContent('work', { title: 'Быстрые деньги онлайн', text: '' }).reason, 'spam');
     assert.equal(checkContent('trips', { title: 'Еду на автомобиле в Краснодар', text: '' }).ok, true);
 });
+
+test('проверка перед показом: первая карточка нового автора скрыта до одобрения в Telegram, потом автор доверенный', async () => {
+    const { ListingStore } = require('../src/listings');
+    const cfg = makeCfg();
+    const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
+    const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: { ...cfg.limits, dailyListings: 100 }, logger: silent }); await listings.init();
+    const reports = new ReportStore({ dataDir: cfg.dataDir, logger: silent, hideAt: 3 }); await reports.init();
+    const store = await makeStore(cfg);
+    const admin = createAdmin({ token: '', dataDir: cfg.dataDir, logger: silent });
+    const sent = [];
+    const fakeFetch = async (url, o) => { sent.push({ url, body: typeof o.body === 'string' ? JSON.parse(o.body) : null }); return { json: async () => ({ ok: true }) }; };
+    const telegram = createTelegram({ token: 'T', chatId: '777', secret: 's', fetchImpl: fakeFetch, logger: silent });
+    const notes = [];
+    const io = makeIo();
+    const h = createHandlers({ cfg, store, admin, accounts, listings, reports, telegram, notifier: { notify: (ids, p) => notes.push({ ids, p }) }, limiters: limiters(cfg), io, logger: silent });
+    let r = res(); await h.register(req({ ip: '8.8.8.2', body: { name: 'Новый', password: 'correct horse 9' } }), r);
+    const hdr = { authorization: 'Bearer ' + r.body.token }, uid = r.body.user.id;
+    const mk = (t) => ({ ad: { type: 'rent', category: 'house', title: t, priceNum: 3500, price: '3 500 ₽/сут', location: 'Архипо-Осиповка', description: 'Уютный дом', photos: [], facts: [], terms: [], amenities: [] }, profile: {} });
+    r = res(); await h.listingSave(req({ ip: '8.8.8.2', headers: hdr, body: mk('Дом у моря') }), r);
+    assert.equal(r.code, 200); assert.equal(r.body.held, true);
+    const id = r.body.listing.id;
+    assert.ok(sent.some(s => s.url.endsWith('sendMessage') && JSON.stringify(s.body.reply_markup).includes('hok:l:' + id)));
+    // чужие не видят, автор видит
+    r = res(); await h.listingsList(req({ query: {} }), r);
+    assert.equal(r.body.listings.some(l => l.id === id), false);
+    r = res(); await h.listingsList(req({ headers: hdr, query: {} }), r);
+    assert.equal(r.body.listings.some(l => l.id === id), true);
+    // одобрено
+    r = res(); await h.tgHook(req({ params: { secret: 's' }, body: { callback_query: { id: 'q', from: { id: 777 }, data: 'hok:l:' + id, message: { chat: { id: 777 }, message_id: 1, text: 'x' } } } }), r);
+    r = res(); await h.listingsList(req({ query: {} }), r);
+    assert.equal(r.body.listings.some(l => l.id === id), true);
+    assert.equal(reports.isTrusted(uid), true);
+    assert.ok(notes.some(n => n.ids[0] === uid && /одобрена/.test(n.p.title)));
+    // вторая карточка того же автора — без проверки
+    r = res(); await h.listingSave(req({ ip: '8.8.8.2', headers: hdr, body: mk('Второй дом') }), r);
+    assert.equal(r.code, 200); assert.equal(r.body.held, undefined);
+    await store.close();
+});

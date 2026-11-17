@@ -21,6 +21,18 @@ function createTelegram({ token = '', chatId = '', secret = '', fetchImpl = (typ
             return await r.json();
         } catch (e) { logger.warn?.(`telegram ${method}: ${e && e.message}`); return null; }
     }
+    async function callPhoto(fields, dataUrl) {
+        if (!on) return null;
+        try {
+            const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/.exec(String(dataUrl || ''));
+            if (!m || typeof FormData === 'undefined' || typeof Blob === 'undefined') return null;
+            const fd = new FormData();
+            for (const [k, v] of Object.entries(fields)) fd.append(k, typeof v === 'string' ? v : JSON.stringify(v));
+            fd.append('photo', new Blob([Buffer.from(m[2], 'base64')], { type: m[1] }), 'photo.jpg');
+            const r = await fetchImpl(`${base}/bot${token}/sendPhoto`, { method: 'POST', body: fd });
+            return await r.json();
+        } catch (e) { logger.warn?.(`telegram sendPhoto: ${e && e.message}`); return null; }
+    }
     return {
         enabled: () => on,
         chatId: () => String(chatId),
@@ -57,9 +69,23 @@ function createTelegram({ token = '', chatId = '', secret = '', fetchImpl = (typ
             if (link) rows.unshift([{ text: '🔗 Открыть на сайте', url: link }]);
             return call('sendMessage', { chat_id: chatId, text: this.reportText(rep, count, link), parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: { inline_keyboard: rows } });
         },
+        // Первая карточка нового автора: модератору приходит текст (и фото) с кнопками «Одобрить / Удалить / Бан»
+        async notifyHold(h) {
+            if (!on) return null;
+            const kindWord = h.kind === 'service' ? 'услуга' : 'объявление (Жильё)';
+            const text = `🆕 <b>Новая публикация на проверке: ${esc(kindWord)}</b>\n«${esc(h.title)}»${h.price ? '\nЦена: ' + esc(h.price) : ''}\n${h.text ? esc(String(h.text).slice(0, 350)) + '\n' : ''}Автор: ${esc(h.ownerName)}\nПока вы не одобрите, её никто, кроме автора, не видит.`;
+            const k = h.kind === 'service' ? 's' : 'l';
+            const reply_markup = { inline_keyboard: [[{ text: '✅ Одобрить', callback_data: `hok:${k}:${h.id}` }, { text: '🗑 Удалить', callback_data: `hno:${k}:${h.id}` }], [{ text: '⛔ Удалить и забанить', callback_data: `hban:${k}:${h.id}` }]] };
+            if (h.photo) {
+                const r = await callPhoto({ chat_id: String(chatId), caption: text.slice(0, 1000), parse_mode: 'HTML', reply_markup }, h.photo);
+                if (r && r.ok) return r;
+            }
+            return call('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup });
+        },
         answer(id, text) { return call('answerCallbackQuery', { callback_query_id: id, text: String(text || '').slice(0, 190) }); },
         finish(msg, note) {
             if (!msg) return Promise.resolve(null);
+            if (msg.photo) return call('editMessageCaption', { chat_id: msg.chat.id, message_id: msg.message_id, caption: String(msg.caption || '').slice(0, 900) + '\n\n' + note, reply_markup: { inline_keyboard: [] } });
             return call('editMessageText', { chat_id: msg.chat.id, message_id: msg.message_id, text: String(msg.text || '').slice(0, 3500) + '\n\n' + note, reply_markup: { inline_keyboard: [] } });
         }
     };

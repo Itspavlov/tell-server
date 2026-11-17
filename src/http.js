@@ -618,6 +618,40 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         }
     }
 
+    // Решение по карточке на проверке: одобрить (автор становится доверенным), удалить, удалить и забанить
+    async function tgHold(cq, act, kind, id) {
+        const held = reports.isHeld(kind, id);
+        if (!held) { await telegram.answer(cq.id, 'Уже разобрано'); await telegram.finish(cq.message, '— уже разобрано'); return; }
+        const holdInfo = reports.data.holds[kind + ':' + id];
+        const ownerId = holdInfo && holdInfo.ownerId;
+        let note = '';
+        if (act === 'hok') {
+            const r = await reports.release(kind, id, { trust: true });
+            if (!r.ok) { await telegram.answer(cq.id, 'Не удалось'); return; }
+            if (notifier && ownerId) notifier.notify([ownerId], { kind: 'listing', title: 'Публикация одобрена', body: 'Её теперь видят все. Следующие публикации появятся сразу.' });
+            if (kind === 'listing') io.emit('listing-changed', { id });
+            note = '✅ Одобрено, автор теперь доверенный';
+        } else {
+            let r = { ok: false };
+            if (kind === 'listing' && listings) { r = await listings.removeAny(id); if (r.ok) { if (reviews) await reviews.dropListing(id); io.emit('listing-changed', { id, removed: true }); } }
+            else if (kind === 'service' && services) r = await services.remove(null, id, { admin: true });
+            if (!r.ok && r.code !== 'LISTING_NOT_FOUND' && r.code !== 'SERVICE_NOT_FOUND') { await telegram.answer(cq.id, 'Не удалось удалить'); return; }
+            await reports.drop(kind, id);
+            if (notifier && ownerId) notifier.notify([ownerId], { kind: 'listing', title: 'Публикация не прошла проверку', body: 'Она не подходит для этого раздела. Правила: только жильё, работа, поездки и развлечения курорта.' });
+            note = '🗑 Удалено';
+            if (act === 'hban') {
+                const u = ownerId && accounts ? accounts.byId(ownerId) : null;
+                if (u && await accounts.setBanned(nameKey(u.name), true)) {
+                    if (io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
+                    note += ' · ⛔ автор заблокирован: ' + u.name;
+                }
+            }
+        }
+        if (admin && admin.audit) await admin.audit('tg_' + act, { kind, target: trunc(id, 40) });
+        await telegram.answer(cq.id, note);
+        await telegram.finish(cq.message, note);
+    }
+
     // Нажатия кнопок из Telegram (вебхук). Секрет в адресе + проверка, что нажал сам модератор.
     async function tgHook(req, res) {
         if (!telegram || !telegram.enabled() || !reports || !telegram.checkSecret(req.params.secret)) return res.status(404).json({ error: 'Not found' });
@@ -626,7 +660,9 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             const cq = req.body && req.body.callback_query;
             if (!cq || typeof cq.data !== 'string') return;
             if (String(cq.from && cq.from.id) !== telegram.chatId()) { await telegram.answer(cq.id, 'Нет доступа'); return; }
-            const [act, id] = cq.data.split(':');
+            const parts = cq.data.split(':');
+            if (parts[0] === 'hok' || parts[0] === 'hno' || parts[0] === 'hban') { await tgHold(cq, parts[0], parts[1] === 's' ? 'service' : 'listing', parts[2]); return; }
+            const [act, id] = parts;
             const rep = reports.data.items.find(x => x.id === id);
             if (!rep) { await telegram.answer(cq.id, 'Жалоба уже разобрана'); await telegram.finish(cq.message, '— уже разобрана'); return; }
             const closeAll = async (note) => {
@@ -1016,6 +1052,22 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, listing: l });
     }
 
+    const HOLD_MSG = 'Спасибо! Первая публикация проверяется модератором, обычно это быстро. После одобрения её увидят все. Следующие публикации пойдут сразу.';
+    // Первая карточка автора без проверки («Проверенный» или уже одобренный автор публикует сразу).
+    // Работает только если подключён Telegram, иначе одобрить было бы негде.
+    async function holdForReview(kind, id, user, info) {
+        try {
+            if (!reports || !telegram || !telegram.enabled()) return false;
+            if (reports.isTrusted(user.id)) return false;
+            if (accounts && accounts.verifiedOf && accounts.verifiedOf(user.id, kind === 'service' ? 'services' : 'housing')) return false;
+            if (!(await reports.hold(kind, id, user.id))) return false;
+            let photo = '';
+            if (kind === 'listing' && listings) { const raw = listings.rawById(id); photo = (raw && raw.ad && (raw.ad.thumb || (raw.ad.photos || [])[0])) || ''; }
+            telegram.notifyHold({ kind, id, title: info.title, price: info.price, text: info.text, ownerName: user.name, photo }).catch(() => {});
+            return true;
+        } catch (e) { logger.warn?.(`holdForReview: ${e && e.message}`); return false; }
+    }
+
     async function listingSave(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const user = accounts && accounts.authenticate(bearer(req));
@@ -1034,10 +1086,12 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await listings.save(user, req.body);
         if (!r.ok) { if (hold) hold.undo(); return listingFail(res, r); }
         if (invites && r.created) { await invites.flush(); await afterPublish(user); }
+        // первая карточка нового автора ждёт одобрения модератора (в Telegram)
+        const held = r.created ? await holdForReview('listing', r.listing.id, user, { title: r.listing.title, price: r.listing.price, text: r.listing.description }) : false;
         io.emit('listing-changed', { id: r.listing.id });
-        res.json({ ok: true, listing: r.listing, quota: invites ? invites.quota(user.id, 'housing') : r.quota });
+        res.json({ ok: true, listing: r.listing, quota: invites ? invites.quota(user.id, 'housing') : r.quota, ...(held ? { held: true, message: HOLD_MSG } : {}) });
         // подписчикам на поиск: только о новых объявлениях
-        if (searches && notifier && r.created) {
+        if (searches && notifier && r.created && !held) {
             const full = listings.get(r.listing.id);
             if (full) searches.notifyFor({ ...full, ownerId: r.listing.ownerId || listings.rawById(r.listing.id).ownerId }).then((list) => list.forEach((n) => {
                 notifier.notify([n.userId], {
@@ -1302,7 +1356,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await services.save(user, req.body);
         if (!r.ok) { if (hold) hold.undo(); return serviceFail(res, r); }
         if (invites && r.created) { await invites.flush(); await afterPublish(user); }
-        res.json({ ok: true, service: r.service, created: r.created });
+        const held = r.created ? await holdForReview('service', r.service.id, user, { title: r.service.title, price: r.service.price ? r.service.price + ' ₽' : '', text: r.service.text }) : false;
+        res.json({ ok: true, service: r.service, created: r.created, ...(held ? { held: true, message: HOLD_MSG } : {}) });
     }
 
     async function serviceBump(req, res) {

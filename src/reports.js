@@ -20,12 +20,12 @@ class ReportStore {
         this._hid = null;
         this.file = new JsonFile({ file: path.join(dataDir, 'reports.json'), fsImpl });
         this.now = now; this.logger = logger;
-        this.data = { items: [] };
+        this.data = { items: [], holds: {}, trusted: {} };
     }
 
     async init() {
         const d = await this.file.load({});
-        this.data = { items: Array.isArray(d.items) ? d.items : [] };
+        this.data = { items: Array.isArray(d.items) ? d.items : [], holds: d.holds && typeof d.holds === 'object' ? d.holds : {}, trusted: d.trusted && typeof d.trusted === 'object' ? d.trusted : {} };
         this.logger.info?.(`Жалобы на контент: ${this.data.items.filter(r => r.status === 'open').length} открытых`);
     }
 
@@ -106,9 +106,31 @@ class ReportStore {
         return hid;
     }
     openCount(kind, targetId) { return this._calc().get(kind + ':' + targetId) || 0; }
-    isHidden(kind, targetId) { return this.hideAt > 0 && this.openCount(kind, targetId) >= this.hideAt; }
+    // Проверка перед показом: первая карточка нового автора скрыта, пока модератор не одобрит (потом автор «доверенный»)
+    isHeld(kind, id) { return !!this.data.holds[kind + ':' + id]; }
+    isTrusted(userId) { return !!this.data.trusted[userId]; }
+    async hold(kind, id, ownerId) {
+        this.data.holds[kind + ':' + id] = { ownerId: ownerId || '', time: this.now() };
+        try { await this.file.save(this.data); } catch (e) { delete this.data.holds[kind + ':' + id]; return false; }
+        return true;
+    }
+    async release(kind, id, { trust = false } = {}) {
+        const h = this.data.holds[kind + ':' + id];
+        if (!h) return { ok: false };
+        delete this.data.holds[kind + ':' + id];
+        if (trust && h.ownerId) this.data.trusted[h.ownerId] = this.now();
+        try { await this.file.save(this.data); } catch (e) { this.data.holds[kind + ':' + id] = h; if (trust && h.ownerId) delete this.data.trusted[h.ownerId]; return { ok: false }; }
+        return { ok: true, ownerId: h.ownerId };
+    }
+    async drop(kind, id) {   // материал удалён: холд больше не нужен
+        if (!this.data.holds[kind + ':' + id]) return;
+        delete this.data.holds[kind + ':' + id];
+        try { await this.file.save(this.data); } catch (e) { /* не критично */ }
+    }
+    isHidden(kind, targetId) { return this.isHeld(kind, targetId) || (this.hideAt > 0 && this.openCount(kind, targetId) >= this.hideAt); }
     hiddenIds(kind) {
         const out = new Set();
+        for (const k of Object.keys(this.data.holds)) if (k.startsWith(kind + ':')) out.add(k.slice(kind.length + 1));
         if (this.hideAt <= 0) return out;
         for (const [k, n] of this._calc()) if (n >= this.hideAt && k.startsWith(kind + ':')) out.add(k.slice(kind.length + 1));
         return out;
