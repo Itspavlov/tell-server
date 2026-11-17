@@ -31,6 +31,7 @@ const { WeatherStore } = require('./src/weather');
 const { Geocoder } = require('./src/geocode');
 const { InviteStore } = require('./src/invites');
 const { ReportStore } = require('./src/reports');
+const { createTelegram } = require('./src/telegram');
 const { createMailer } = require('./src/mailer');
 
 async function start(env = process.env, logger = console) {
@@ -92,6 +93,8 @@ async function start(env = process.env, logger = console) {
     const admin = createAdmin({ token: cfg.adminToken, dataDir: cfg.dataDir, logger });
     const limiters = createLimiters(cfg.rates);
     const geocoder = new Geocoder({ apiKey: cfg.yandexGeocoderKey, referer: cfg.yandexGeocoderReferer || ((cfg.allowedOrigins || [])[0] ? cfg.allowedOrigins[0] + '/' : ''), logger });
+    const telegram = createTelegram({ token: process.env.TG_BOT_TOKEN || '', chatId: process.env.TG_CHAT_ID || '', secret: process.env.TG_WEBHOOK_SECRET || '', logger });
+    logger.info(`Telegram для жалоб: ${telegram.enabled() ? 'включён' : 'выключен (нет TG_BOT_TOKEN, TG_CHAT_ID, TG_WEBHOOK_SECRET)'}`);
     const mailer = createMailer(cfg.mail, { logger });
     logger.info(`Почта (коды восстановления): ${mailer.enabled ? 'включена' : 'выключена (нет SMTP_HOST/SMTP_USER/SMTP_PASS)'}`);
 
@@ -106,7 +109,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

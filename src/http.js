@@ -4,12 +4,13 @@
 // (получают req/res), поэтому проверяются тестами с поддельными объектами.
 // ============================================
 
+const { checkContent } = require('./contentfilter');
 const { isValidRoom } = require('./validate');
 const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -607,6 +608,49 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await reports.create(u, b, target, { trusted });
         if (!r.ok) return res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : (r.code === 'REPORT_DUPLICATE' ? 409 : 400)).json(r);
         res.status(201).json({ ok: true, id: r.id });
+        // модератору в Telegram: сообщение с кнопками «Удалить / Бан автора / Оставить»
+        if (telegram && telegram.enabled()) {
+            const rep = reports.data.items.find(x => x.id === r.id);
+            if (rep) telegram.notifyReport(rep, reports.count(rep.kind, rep.targetId)).catch(() => {});
+        }
+    }
+
+    // Нажатия кнопок из Telegram (вебхук). Секрет в адресе + проверка, что нажал сам модератор.
+    async function tgHook(req, res) {
+        if (!telegram || !telegram.enabled() || !reports || !telegram.checkSecret(req.params.secret)) return res.status(404).json({ error: 'Not found' });
+        res.json({ ok: true });
+        try {
+            const cq = req.body && req.body.callback_query;
+            if (!cq || typeof cq.data !== 'string') return;
+            if (String(cq.from && cq.from.id) !== telegram.chatId()) { await telegram.answer(cq.id, 'Нет доступа'); return; }
+            const [act, id] = cq.data.split(':');
+            const rep = reports.data.items.find(x => x.id === id);
+            if (!rep) { await telegram.answer(cq.id, 'Жалоба уже разобрана'); await telegram.finish(cq.message, '— уже разобрана'); return; }
+            const closeAll = async (note) => {
+                for (const x of reports.data.items.filter(y => y.status === 'open' && y.kind === rep.kind && y.targetId === rep.targetId)) await reports.close(x.id, note);
+            };
+            let note = '';
+            if (act === 'keep') { await reports.close(rep.id, 'оставлено (Telegram)'); note = '✅ Оставлено'; }
+            else if (act === 'del') {
+                let r = { ok: false };
+                if (rep.kind === 'listing' && listings) { r = await listings.removeAny(rep.targetId); if (r.ok) { if (reviews) await reviews.dropListing(rep.targetId); io.emit('listing-changed', { id: rep.targetId, removed: true }); } }
+                else if (rep.kind === 'request' && requests) { const before = photosOf(rep.targetId); r = await requests.removeAny(rep.targetId); if (r.ok) { dropPhotos(before); io.emit('request-changed', { id: rep.targetId }); } }
+                else if (rep.kind === 'service' && services) r = await services.remove(null, rep.targetId, { admin: true });
+                else if (rep.kind === 'dviz' && dviz) r = await dviz.remove(null, rep.targetId, { admin: true });
+                if (!r.ok && r.code !== 'LISTING_NOT_FOUND' && r.code !== 'REQUEST_NOT_FOUND' && r.code !== 'SERVICE_NOT_FOUND' && r.code !== 'DVIZ_NOT_FOUND') { await telegram.answer(cq.id, 'Не удалось удалить'); return; }
+                if (notifier && rep.ownerId) notifier.notify([rep.ownerId], { kind: 'listing', title: 'Публикация удалена', body: 'Модератор удалил вашу публикацию «' + String(rep.title || '').slice(0, 60) + '» по жалобам' });
+                await closeAll('удалено (Telegram)'); note = '🗑 Удалено';
+            } else if (act === 'ban') {
+                const u = rep.ownerId && accounts ? accounts.byId(rep.ownerId) : null;
+                if (!u) { await telegram.answer(cq.id, 'Автор не найден'); return; }
+                if (!(await accounts.setBanned(nameKey(u.name), true))) { await telegram.answer(cq.id, 'Не удалось'); return; }
+                if (io && typeof io.in === 'function') { try { io.in('user:' + u.id).disconnectSockets(true); } catch (e) { /* не критично */ } }
+                await closeAll('автор заблокирован (Telegram)'); note = '⛔ Автор заблокирован: ' + u.name;
+            } else { await telegram.answer(cq.id, 'Неизвестное действие'); return; }
+            if (admin && admin.audit) await admin.audit('tg_' + act, { report: id, kind: rep.kind, target: trunc(rep.targetId, 40) });
+            await telegram.answer(cq.id, note);
+            await telegram.finish(cq.message, note);
+        } catch (e) { logger.warn?.(`tgHook: ${e && e.message}`); }
     }
 
     async function blocksList(req, res) {
@@ -680,6 +724,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
     const sectionOf = (raw) => (['housing', 'work', 'trips', 'services'].includes(raw) ? raw : 'housing');
     function dailyLimit(res, q) {
         const more = q.limit < 5 ? '. Пригласите друга: за каждого, кто зарегистрируется и опубликует карточку, лимит растёт на одну в день' : '. Это максимум, новые можно завтра';
+        if (q.newbie) return res.status(429).json({ ok: false, code: 'DAILY_LIMIT', message: 'Новым аккаунтам в первые сутки можно опубликовать до 2 карточек. Остальное можно будет завтра', quota: q });
         return res.status(429).json({ ok: false, code: 'DAILY_LIMIT', message: `Сегодня в разделе «${SECTION_TITLE[q.section]}» вы уже опубликовали ${q.used} из ${q.limit}${more}`, quota: q });
     }
     // Друг опубликовал первую карточку: тому, кто пригласил, +1 к лимиту
@@ -787,6 +832,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
         if (!carPhotosOk(user, req.body)) return res.status(400).json(fail('IMAGE_INVALID'));
+        {
+            const b = req.body && typeof req.body === 'object' ? req.body : {};
+            const c = checkContent(sectionOf(b.section), { title: b.title, text: b.text });
+            if (!c.ok) return res.status(400).json(c);
+        }
         const hold = invites ? invites.reserve(user.id, sectionOf(req.body && req.body.section)) : null;
         if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await requests.create(user, req.body);
@@ -970,6 +1020,12 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.listingSave.hit(user.id);
         if (!rl.ok) return limited(res, rl);
         const isNewAd = !(req.body && typeof req.body.id === 'string' && req.body.id);
+        {   // явный мусор («продам машину» в «Жилье», мат, спам, нереальная цена) не публикуем
+            const b = req.body && typeof req.body === 'object' ? req.body : {};
+            const long = Array.isArray(b.terms) && b.terms.some(t => t && t.l === 'Срок аренды' && /длит/i.test(String(t.v || '')));
+            const c = checkContent('housing', { title: b.title, text: b.description, priceNum: b.priceNum, long });
+            if (!c.ok) return res.status(400).json(c);
+        }
         const hold = invites && isNewAd ? invites.reserve(user.id, 'housing') : null;
         if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await listings.save(user, req.body);
@@ -1233,6 +1289,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.serviceWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
         const isNewSvc = !(req.body && typeof req.body.id === 'string' && req.body.id);
+        {
+            const b = req.body && typeof req.body === 'object' ? req.body : {};
+            const c = checkContent('services', { title: b.title, text: b.text });
+            if (!c.ok) return res.status(400).json(c);
+        }
         const hold = invites && isNewSvc ? invites.reserve(user.id, 'services') : null;
         if (hold && !hold.ok) return dailyLimit(res, hold.quota);
         const r = await services.save(user, req.body);
@@ -1422,15 +1483,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1497,6 +1558,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/auth/reset', h.resetStart);
     app.post('/api/auth/reset/confirm', h.resetConfirm);
     app.post('/api/reports', express.json({ limit: '2kb' }), h.reportCreate);
+    app.post('/api/tg/:secret', express.json({ limit: '20kb' }), h.tgHook);
     app.get('/api/blocks', h.blocksList);
     app.post('/api/blocks', express.json({ limit: '1kb' }), h.blockSet);
     app.get('/api/admin/content-reports', h.adminContentReports);

@@ -129,3 +129,18 @@ Invoke-RestMethod -Method Post -Uri https://tell-server.onrender.com/api/admin/v
 - `GET /api/media/:id` отдаёт файл с поддержкой Range. Идентификатор — 128 бит случайных данных.
 - Видео прикрепляется к сообщению через `dm-send {video:{id}}`; прикрепить можно только своё. Файлы лежат в `DATA_DIR/media`, старше 30 дней удаляются.
 - nginx: `client_max_body_size 8m` (ставит `deploy/setup.sh`).
+
+## Жалобы в Telegram (необязательно)
+
+На каждую жалобу модератору приходит сообщение с кнопками «Удалить», «Бан автора», «Оставить».
+В файле окружения (/opt/tell-server/.env или как у вас) задайте:
+
+| Переменная | Что это |
+|---|---|
+| TG_BOT_TOKEN | токен бота от @BotFather |
+| TG_CHAT_ID | ваш личный Telegram id (узнать у @userinfobot). Кнопки работают только у него |
+| TG_WEBHOOK_SECRET | любая длинная случайная строка из латинских букв и цифр |
+
+Потом один раз подключите вебхук (подставьте свои значения):
+`curl "https://api.telegram.org/bot<TG_BOT_TOKEN>/setWebhook?url=https://<ваш-домен>/api/tg/<TG_WEBHOOK_SECRET>&allowed_updates=[\"callback_query\"]"`
+Бота нужно один раз открыть и нажать Start, иначе он не сможет писать вам.

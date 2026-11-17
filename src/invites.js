@@ -15,6 +15,8 @@ const { dayKey } = require('./listings');
 
 const SECTIONS = ['housing', 'work', 'trips', 'services'];
 const BASE_LIMIT = 1;
+const NEWBIE_TOTAL = 2;     // карточек за первые сутки жизни аккаунта, во всех разделах
+const DAY_MS = 24 * 3600 * 1000;
 const DAY_CAP = 5;          // максимум карточек в день на раздел
 const MAX_FRIENDS = 5;      // сколько друзей засчитывается
 const MAX_PENDING = 30;     // сколько регистраций по одной ссылке храним (чтобы список не раздувался)
@@ -126,9 +128,21 @@ class InviteStore {
 
     // Проверка и учёт идут синхронно (до первого await), поэтому параллельные запросы не пробьют лимит.
     // undo() возвращает счётчик, если публикация потом не удалась.
+    // Новый аккаунт (младше суток) в первые сутки публикует не больше NEWBIE_TOTAL карточек во всех разделах вместе
+    _isNewbie(userId) {
+        const u = this.accounts && this.accounts.data && this.accounts.data.users && this.accounts.data.users[userId];
+        return !!(u && u.createdAt && this.now() - u.createdAt < DAY_MS);
+    }
+    _usedToday(userId) {
+        const u = this.data.usage[userId];
+        if (!u || u.day !== this._day()) return 0;
+        return SECTIONS.reduce((n, s) => n + (u[s] || 0), 0);
+    }
+
     reserve(userId, section) {
         const q = this.quota(userId, section);
         if (q.left <= 0) return { ok: false, quota: q };
+        if (this._isNewbie(userId) && this._usedToday(userId) >= NEWBIE_TOTAL) return { ok: false, quota: { ...q, left: 0, newbie: true } };
         const prev = this.data.usage[userId] ? { ...this.data.usage[userId] } : undefined;
         const cur = prev && prev.day === q.day ? { ...prev } : { day: q.day };
         cur[q.section] = (cur[q.section] || 0) + 1;
