@@ -26,8 +26,8 @@ function createNotifier({ io, push = null, inbox = null, logger = console }) {
     function notify(userIds, payload) {
         const p = {
             kind: String(payload.kind || 'info').slice(0, 20),
-            title: cut(payload.title, 60),
-            body: cut(payload.body, 140),
+            title: cut(payload.title, 120),
+            body: cut(payload.body, 500),
             open: payload.open ? String(payload.open).slice(0, 120) : '',
             tag: payload.tag ? String(payload.tag).slice(0, 80) : '',
             time: Date.now()

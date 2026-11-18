@@ -216,7 +216,7 @@ class RequestStore {
         for (const [oid] of offers) delete this.data.offers[oid];
         try { await this.file.save(this.data); }
         catch (e) { this.data.requests[id] = r; for (const [oid, o] of offers) this.data.offers[oid] = o; return fail('STORE_UNAVAILABLE'); }
-        return { ok: true, ownerId: r.ownerId, ownerName: r.ownerName, title: r.title || '', category: r.category };
+        return { ok: true, ownerId: r.ownerId, ownerName: r.ownerName, title: r.title || '', category: r.category, section: r.section || 'housing', kind: r.kind || 'seek' };
     }
 
     // Включить/выключить уведомления о подходящем жилье по этому запросу

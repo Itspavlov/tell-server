@@ -204,9 +204,9 @@ test('уведомления: админ подтвердил хозяина и 
 test('уведомления: длинный текст обрезается, лишние пробелы убираются', () => {
     const io = makeIo();
     const n = createNotifier({ io, push: null, logger: silent });
-    n.notify(['u1', 'u1'], { kind: 'dm', title: 'A'.repeat(200), body: '  много   пробелов\n\nи ' + 'я'.repeat(300) });
+    n.notify(['u1', 'u1'], { kind: 'dm', title: 'A'.repeat(200), body: '  много   пробелов\n\nи ' + 'я'.repeat(700) });
     assert.equal(io.emitted.length, 1, 'одному получателю — одно уведомление');
-    assert.ok(io.emitted[0].payload.title.length <= 60);
-    assert.ok(io.emitted[0].payload.body.length <= 140);
+    assert.ok(io.emitted[0].payload.title.length <= 120);
+    assert.ok(io.emitted[0].payload.body.length <= 500);
     assert.ok(io.emitted[0].payload.body.startsWith('много пробелов и'));
 });

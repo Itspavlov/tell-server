@@ -257,7 +257,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         await admin.audit('verify', { target: b.name.slice(0, 40), verified: b.verified, kind, ip: ipOf(req) });
         const who = accounts.findByKey(nameKey(b.name));
         const KIND_TITLE = { housing: 'Вы проверенный хозяин', trips: 'Вы проверенный водитель', services: 'Ваши развлечения проверены' };
-        if (notifier && who && b.verified) notifier.notify([who.id], { kind: 'verify', title: KIND_TITLE[kind], body: 'Рядом с вашими публикациями появится значок «Проверен»: вам будут больше доверять', open: 'profile', tag: 'verify-' + kind });
+        if (notifier && who && b.verified) notifier.notify([who.id], { kind: 'verify', title: KIND_TITLE[kind], body: 'Рядом с вашими публикациями появится значок «Проверен»: вам будут больше доверять', open: 'verify', tag: 'verify-' + kind });
         res.json({ ok: true });
     }
 
@@ -373,7 +373,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await listings.removeAny(req.params.id);
         if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
         if (reviews) await reviews.dropListing(req.params.id);
-        if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'listing', title: 'Объявление удалено', body: 'Модератор удалил ваше объявление «' + trunc(r.title, 60) + '»', open: 'profile', tag: 'listing-removed' });
+        if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'listing', title: 'Объявление удалено', body: 'Модератор удалил ваше объявление «' + trunc(r.title, 60) + '»', open: 'pubs:housing', tag: 'listing-removed' });
         await admin.audit('delete_listing', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), ip: ipOf(req) });
         if (io && typeof io.emit === 'function') io.emit('listing-changed', { id: req.params.id, removed: true });
         res.json({ ok: true });
@@ -392,7 +392,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await requests.removeAny(req.params.id);
         if (!r.ok) return res.status(r.code === 'REQUEST_NOT_FOUND' ? 404 : 503).json({ ok: false, code: r.code });
         dropPhotos(before);
-        if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'request', title: 'Запрос удалён', body: 'Модератор удалил ваш запрос' + (r.title ? ' «' + trunc(r.title, 60) + '»' : ''), open: 'profile', tag: 'request-removed' });
+        if (notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'request', title: 'Запрос удалён', body: 'Модератор удалил ваш запрос' + (r.title ? ' «' + trunc(r.title, 60) + '»' : ''), open: pubsOpen(r.section, r.kind), tag: 'request-removed' });
         await admin.audit('delete_request', { id: trunc(req.params.id, 40), owner: trunc(r.ownerName, 40), title: trunc(r.title, 60), ip: ipOf(req) });
         if (io && typeof io.emit === 'function') io.emit('request-changed', { id: req.params.id, removed: true });
         res.json({ ok: true });
@@ -628,18 +628,26 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (act === 'hok') {
             const r = await reports.release(kind, id, { trust: true });
             if (!r.ok) { await telegram.answer(cq.id, 'Не удалось'); return; }
-            if (notifier && ownerId) notifier.notify([ownerId], { kind: 'listing', title: 'Публикация одобрена', body: 'Её теперь видят все. Следующие публикации появятся сразу.' });
+            if (notifier && ownerId) {
+                const rq = kind === 'request' && requests ? requests.data.requests[id] : null;
+                const where = kind === 'listing' ? 'listing:' + id : kind === 'service' ? 'service:' + id : pubsOpen(rq && rq.section, rq && rq.kind);
+                notifier.notify([ownerId], { kind: 'listing', title: 'Публикация одобрена', body: 'Ваша карточка прошла проверку модератора, теперь её видят все. Следующие публикации появятся сразу.', open: where, tag: 'hold-ok-' + id });
+            }
             if (kind === 'listing') io.emit('listing-changed', { id });
             if (kind === 'request') io.emit('request-changed', { id });
             note = '✅ Одобрено, автор теперь доверенный';
         } else {
             let r = { ok: false };
+            const rqBefore = kind === 'request' && requests ? requests.data.requests[id] : null;
             if (kind === 'listing' && listings) { r = await listings.removeAny(id); if (r.ok) { if (reviews) await reviews.dropListing(id); io.emit('listing-changed', { id, removed: true }); } }
             else if (kind === 'service' && services) r = await services.remove(null, id, { admin: true });
             else if (kind === 'request' && requests) { const before = photosOf(id); r = await requests.removeAny(id); if (r.ok) { dropPhotos(before); io.emit('request-changed', { id, removed: true }); } }
             if (!r.ok && r.code !== 'LISTING_NOT_FOUND' && r.code !== 'SERVICE_NOT_FOUND' && r.code !== 'REQUEST_NOT_FOUND') { await telegram.answer(cq.id, 'Не удалось удалить'); return; }
             await reports.drop(kind, id);
-            if (notifier && ownerId) notifier.notify([ownerId], { kind: 'listing', title: 'Публикация не прошла проверку', body: 'Она не подходит для этого раздела. Правила: только жильё, работа, поездки и развлечения курорта.' });
+            if (notifier && ownerId) {
+                const where = kind === 'listing' ? 'pubs:housing:ads' : kind === 'service' ? 'pubs:services' : pubsOpen(rqBefore && rqBefore.section, rqBefore && rqBefore.kind);
+                notifier.notify([ownerId], { kind: 'listing', title: 'Публикация не прошла проверку', body: 'Она не подходит для этого раздела. Правила: только жильё, работа, поездки и развлечения курорта.', open: where, tag: 'hold-no-' + id });
+            }
             note = '🗑 Удалено';
             if (act === 'hban') {
                 const u = ownerId && accounts ? accounts.byId(ownerId) : null;
@@ -673,13 +681,13 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             let note = '';
             if (act === 'keep') { await reports.close(rep.id, 'оставлено (Telegram)'); note = '✅ Оставлено'; }
             else if (act === 'del') {
-                let r = { ok: false };
+                let r = { ok: false }, rq0 = null;
                 if (rep.kind === 'listing' && listings) { r = await listings.removeAny(rep.targetId); if (r.ok) { if (reviews) await reviews.dropListing(rep.targetId); io.emit('listing-changed', { id: rep.targetId, removed: true }); } }
-                else if (rep.kind === 'request' && requests) { const before = photosOf(rep.targetId); r = await requests.removeAny(rep.targetId); if (r.ok) { dropPhotos(before); io.emit('request-changed', { id: rep.targetId }); } }
+                else if (rep.kind === 'request' && requests) { rq0 = requests.data.requests[rep.targetId]; const before = photosOf(rep.targetId); r = await requests.removeAny(rep.targetId); if (r.ok) { dropPhotos(before); io.emit('request-changed', { id: rep.targetId }); } }
                 else if (rep.kind === 'service' && services) r = await services.remove(null, rep.targetId, { admin: true });
                 else if (rep.kind === 'dviz' && dviz) r = await dviz.remove(null, rep.targetId, { admin: true });
                 if (!r.ok && r.code !== 'LISTING_NOT_FOUND' && r.code !== 'REQUEST_NOT_FOUND' && r.code !== 'SERVICE_NOT_FOUND' && r.code !== 'DVIZ_NOT_FOUND') { await telegram.answer(cq.id, 'Не удалось удалить'); return; }
-                if (notifier && rep.ownerId) notifier.notify([rep.ownerId], { kind: 'listing', title: 'Публикация удалена', body: 'Модератор удалил вашу публикацию «' + String(rep.title || '').slice(0, 60) + '» по жалобам' });
+                if (notifier && rep.ownerId) notifier.notify([rep.ownerId], { kind: 'listing', title: 'Публикация удалена', body: 'Модератор удалил вашу публикацию «' + String(rep.title || '').slice(0, 60) + '» по жалобам', open: rep.kind === 'listing' ? 'pubs:housing:ads' : rep.kind === 'service' ? 'pubs:services' : rep.kind === 'dviz' ? 'pubs:dviz' : pubsOpen(rq0 && rq0.section, rq0 && rq0.kind), tag: 'tg-del-' + rep.targetId });
                 await closeAll('удалено (Telegram)'); note = '🗑 Удалено';
             } else if (act === 'ban') {
                 const u = rep.ownerId && accounts ? accounts.byId(rep.ownerId) : null;
@@ -915,7 +923,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const r = await requests.offer(user, req.params.id, lid, listings);
         if (!r.ok) return requestFail(res, r);
         const l = listings.rawById(lid);
-        if (notifier) notifier.notify([r.request.ownerId], { kind: 'offer', title: 'Вам предложили жильё', body: user.name + ': ' + trunc((l && l.ad.title) || 'жильё', 80), open: 'profile', tag: 'offer-' + r.request.id });
+        if (notifier) notifier.notify([r.request.ownerId], { kind: 'offer', title: 'Вам предложили жильё', body: user.name + ': ' + trunc((l && l.ad.title) || 'жильё', 80), open: 'pubs:housing:req', tag: 'offer-' + r.request.id });
         io.emit('request-changed', { id: r.request.id });
         res.json({ ok: true });
     }
@@ -1057,6 +1065,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, listing: l });
     }
 
+    // куда ведёт уведомление о карточке в «Моих публикациях»: раздел и вкладка (объявления / запросы)
+    const pubsOpen = (section, kind) => 'pubs:' + (['housing', 'work', 'trips'].includes(section) ? section : 'housing') + ':' + (section === 'housing' ? (kind === 'offer' ? 'ads' : 'req') : (kind === 'offer' ? 'ads' : 'req'));
     const HOLD_MSG = 'Спасибо! Первая публикация проверяется модератором, обычно это быстро. После одобрения её увидят все. Следующие публикации пойдут сразу.';
     // Первая карточка автора без проверки («Проверенный» или уже одобренный автор публикует сразу).
     // Работает только если подключён Telegram, иначе одобрить было бы негде.
@@ -1112,7 +1122,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
                 notifier.notify([n.ownerId], {
                     kind: 'match',
                     title: n.count > 1 ? 'Найдено жильё под ' + n.count + ' ваших запроса' : 'Найдено жильё под ваш запрос',
-                    body: trunc(raw.ad.price, 30) + ' · ' + trunc(raw.ad.title, 80), open: 'profile', tag: 'match-' + n.requests[0]
+                    body: trunc(raw.ad.price, 30) + ' · ' + trunc(raw.ad.title, 80), open: 'pubs:housing:req', tag: 'match-' + n.requests[0]
                 });
                 io.emit('request-changed', { id: n.requests[0] });
             })).catch(() => {});
@@ -1442,7 +1452,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!rl.ok) return limited(res, rl);
         const r = await dviz.comment(user, req.params.id, req.body && req.body.text);
         if (!r.ok) return dvizFail(res, r);
-        if (notifier && r.ownerId && r.ownerId !== user.id) notifier.notify([r.ownerId], { kind: 'dviz', title: user.name + ' · ' + trunc(r.title, 40), body: trunc(r.comment.text, 100), open: 'room:dating', tag: 'dviz:' + req.params.id });
+        if (notifier && r.ownerId && r.ownerId !== user.id) notifier.notify([r.ownerId], { kind: 'dviz', title: user.name + ' · ' + trunc(r.title, 40), body: trunc(r.comment.text, 100), open: 'dviz:' + req.params.id, tag: 'dviz:' + req.params.id });
         if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id });
         res.json({ ok: true, comment: r.comment, comments: r.event.comments });
     }
@@ -1465,7 +1475,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!rl.ok) return limited(res, rl);
         const r = await dviz.toggleJoin(user, req.params.id);
         if (!r.ok) return dvizFail(res, r);
-        if (r.joined && notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'dviz', title: 'Новый отклик на движ', body: user.name + ' идёт на «' + trunc(r.title, 50) + '»', open: 'room:dating', tag: 'dviz:' + req.params.id });
+        if (r.joined && notifier && r.ownerId) notifier.notify([r.ownerId], { kind: 'dviz', title: 'Новый отклик на движ', body: user.name + ' идёт на «' + trunc(r.title, 50) + '»', open: 'dviz:' + req.params.id, tag: 'dviz:' + req.params.id });
         if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id });
         res.json({ ok: true, joined: r.joined, joins: r.event.joins });
     }
