@@ -50,7 +50,9 @@ function cleanRequest(raw, today) {
     const pets = housing && (raw.pets === true || raw.pets === 'true' || raw.pets === 1 || raw.pets === '1');
     if (housing && !city && !note && !category) return fail('BAD_REQUEST');   // совсем пустой запрос не нужен
     if (!housing && !title) return fail('BAD_REQUEST');                       // у остальных разделов нужен заголовок
-    const value = { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget, pets, text: note };
+    // «цена договорная»: у работы и поездок вместо суммы
+    const negotiable = !housing && (raw.negotiable === true || raw.negotiable === 'true' || raw.negotiable === 1 || raw.negotiable === '1');
+    const value = { section, kind, title, category, city, district, dateFrom: from, dateTo: to, guests, budget: negotiable ? null : budget, negotiable, pets, text: note };
     // фото автомобиля: только у «Предлагаю поездку», это id файлов из /api/media (принадлежность владельцу проверяет http.js)
     if (section === 'trips' && kind === 'offer' && raw.photos !== undefined) {
         if (!Array.isArray(raw.photos) || raw.photos.length > MAX_CAR_PHOTOS) return fail('IMAGE_INVALID');
@@ -70,7 +72,7 @@ function cleanRequest(raw, today) {
     return { ok: true, value };
 }
 
-const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.pets ? 'pets' : '', v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
+const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.negotiable ? 'neg' : '', v.pets ? 'pets' : '', v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
 
 class RequestStore {
     constructor({ dataDir, limits, now = Date.now, logger = console, fsImpl, dayOf }) {
@@ -102,7 +104,7 @@ class RequestStore {
             id: r.id, ownerId: r.ownerId, ownerName: r.ownerName, created: r.created, updated: r.updated,
             expires: r.created + this._ttl(), status: this._status(r), mine: viewerId === r.ownerId,
             section: r.section || 'housing', kind: r.kind || 'seek', title: r.title || '', category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
-            guests: r.guests, budget: r.budget, pets: !!r.pets, text: r.text, notify: r.notify !== false,
+            guests: r.guests, budget: r.budget, negotiable: !!r.negotiable, pets: !!r.pets, text: r.text, notify: r.notify !== false,
             photos: Array.isArray(r.photos) ? r.photos : [],
             art: typeof r.art === 'string' && ART_RE.test(r.art) ? r.art : ''
         };

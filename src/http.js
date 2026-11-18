@@ -1270,7 +1270,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({
             ok: true, isMe: !!(viewer && viewer.id === u.id),
             user: { id: u.id, name: u.name, verified: !!u.verified, since: full && full.createdAt ? new Date(full.createdAt).getFullYear() : null, avatar: raws[0] ? raws[0].owner.avatar : '', about: raws[0] ? raws[0].owner.about : '' },
-            listings: raws.map(l => listings.light(l)), services: services ? services.list({ ownerId: u.id }) : [], rating: rv.rating, count: rv.count, reviews: rv.items
+            listings: raws.map(l => listings.light(l)), services: services ? services.list({ ownerId: u.id, viewerId: viewer ? viewer.id : null }) : [], rating: rv.rating, count: rv.count, reviews: rv.items
         });
     }
 
@@ -1342,7 +1342,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const mine = q.mine === '1' || q.mine === 'true';
         let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
         if (mine) { const u = accounts && accounts.authenticate(bearer(req)); if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = u.id; }
-        const sl = services.list({ ownerId });
+        const sl = services.list({ ownerId, viewerId: viewerOf(req) });
         res.json({ ok: true, services: mine ? sl : hideFor('service', sl, reports && reports.hiddenIds('service').size ? viewerOf(req) : null) });
     }
 
@@ -1350,7 +1350,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!services) return res.status(404).json({ error: 'Not found' });
         const rl = limiters.history.hit(ipOf(req));
         if (!rl.ok) return limited(res, rl);
-        const s = services.get(req.params.id);
+        const s = services.get(req.params.id, viewerOf(req));
         if (!s || hiddenFrom('service', s, reports && reports.isHidden('service', s.id) ? viewerOf(req) : null)) return serviceFail(res, { code: 'SERVICE_NOT_FOUND', message: 'Карточка не найдена' });
         res.json({ ok: true, service: s });
     }

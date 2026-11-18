@@ -136,3 +136,24 @@ test('услуга: точка на карте и «куда подойти» с
     for (const bad of [[1], ['a', 'b'], [95, 10], [10, 200], 'x', {}]) assert.equal((await services.save(a, SV({ coords: bad }))).ok, false);
     await store.close();
 });
+
+test('услуга: телефон приводится к +7, невалидный отклоняется, скрытый видит только автор', async () => {
+    const { services, reg, store, h } = await setup();
+    const a = await reg('Анна'), b = await reg('Борис');
+    let r = await services.save(a, SV({ phone: '8 (900) 123-45-67' }));
+    assert.equal(r.service.phone, '+79001234567');
+    assert.equal((await services.save(a, SV({ phone: '12345' }))).code, 'SERVICE_PHONE');
+    assert.equal((await services.save(a, SV({ phone: 'abc' }))).code, 'SERVICE_PHONE');
+    assert.equal((await services.save(a, SV({ phone: '' }))).service.phone, '');
+    r = await services.save(a, SV({ phone: '+7 900 123 45 67', hidePhone: true }));
+    const id = r.service.id;
+    assert.equal(r.service.phone, '+79001234567', 'автор видит свой номер');
+    assert.equal(services.get(id, b.id).phone, '', 'другим скрыт');
+    assert.equal(services.get(id).phone, '');
+    assert.equal(services.get(id, a.id).phone, '+79001234567');
+    assert.equal(services.list({ viewerId: b.id }).find(x => x.id === id).phone, '');
+    assert.equal(services.get(id, b.id).hidePhone, true);
+    const open = await services.save(a, SV({ title: 'Открытая', phone: '+79001112233' }));
+    assert.equal(services.list({ viewerId: b.id }).find(x => x.id === open.service.id).phone, '+79001112233');
+    await store.close();
+});

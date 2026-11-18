@@ -538,3 +538,17 @@ test('смена аватарки: всем уходит событие avatar-c
     assert.ok(ev, 'событие отправлено');
     assert.deepEqual(ev.payload, { name: 'Анна', avatar: 'av07' });
 });
+
+test('работа и поездки: «цена договорная» сохраняется и убирает сумму, у жилья не действует', async () => {
+    const { requests, reg, store, clock } = await setup();
+    const a = await reg('Анна');
+    const w = await requests.create(a, { section: 'work', kind: 'offer', title: 'Нужен повар', city: 'Архипо-Осиповка', budget: 5000, negotiable: true });
+    assert.equal(w.ok, true);
+    assert.equal(w.request.negotiable, true);
+    assert.equal(w.request.budget, null);
+    clock.t += 61000;
+    const h = await requests.create(a, { section: 'housing', kind: 'seek', city: 'Сочи', negotiable: true, budget: 3000 });
+    assert.equal(h.request.negotiable, false);
+    assert.equal(h.request.budget, 3000);
+    await store.close();
+});

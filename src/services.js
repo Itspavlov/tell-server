@@ -16,7 +16,7 @@ const MAX_PER_USER = 10, MAX_PHOTOS = 4, PHOTO_BYTES = 350_000, THUMB_BYTES = 60
 const MAX_BYTES = 80 * 1048576;                       // общий потолок services.json
 const BUMP_COOLDOWN_MS = 6 * 3600 * 1000;
 const TAGS = ['sea', 'tours', 'active', 'kids', 'show', 'food', 'other'];   // морские прогулки, экскурсии, активный отдых, детям, шоу и вечера, еда
-const UNITS = ['', 'за человека', 'за час', 'за день', 'за билет', 'за лодку / группу'];
+const UNITS = ['', 'за человека', 'за час', 'за день', 'за билет', 'за лодку / группу', 'за порцию', 'средний чек'];
 
 const num = (v, min, max) => {
     if (v === undefined || v === null || v === '') return null;
@@ -24,12 +24,25 @@ const num = (v, min, max) => {
     return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : NaN;
 };
 
+// телефон: +7XXXXXXXXXX (8 и 7 в начале приводим к +7), чужие форматы — просто цифры с плюсом; пусто — без телефона
+function cleanPhone(v) {
+    if (v === undefined || v === null || v === '') return { ok: true, value: '' };
+    if (typeof v !== 'string' || v.length > 30) return { ok: false };
+    let d = v.replace(/[^\d]/g, '');
+    if (!d) return v.trim() ? { ok: false } : { ok: true, value: '' };
+    if (d.length === 11 && (d[0] === '8' || d[0] === '7')) d = '7' + d.slice(1);
+    else if (d.length === 10) d = '7' + d;
+    if (d.length < 10 || d.length > 15) return { ok: false };
+    return { ok: true, value: '+' + d };
+}
+
 function cleanService(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('BAD_REQUEST');
     const t = normalizeText(raw.title, 80); if (!t.ok) return fail('SERVICE_TITLE');
     if (!t.value) return fail('SERVICE_TITLE');
     const d = normalizeText(typeof raw.text === 'string' ? raw.text : '', 800); if (!d.ok) return fail('SERVICE_TEXT');
     const c = normalizeText(typeof raw.city === 'string' ? raw.city : '', 60); if (!c.ok) return fail('BAD_REQUEST');
+    const ph = cleanPhone(raw.phone); if (!ph.ok) return fail('SERVICE_PHONE');
     const tag = TAGS.includes(raw.tag) ? raw.tag : 'other';
     const unit = UNITS.includes(raw.unit) ? raw.unit : '';
     const price = num(raw.price, 1, 10_000_000);
@@ -52,7 +65,7 @@ function cleanService(raw) {
     let thumb = '';
     if (raw.thumb) { const r = validateImage(raw.thumb, THUMB_BYTES); if (!r.ok) return fail('IMAGE_INVALID'); thumb = r.value; }
     else if (photos[0] && photos[0].length <= Math.ceil(THUMB_BYTES * 4 / 3) + 128) thumb = photos[0];
-    return { ok: true, value: { title: t.value, text: d.value, city: c.value, place: pl.value, coords, tag, unit, price, photos, thumb } };
+    return { ok: true, value: { title: t.value, text: d.value, city: c.value, place: pl.value, coords, tag, unit, price, photos, thumb, phone: ph.value, hidePhone: !!raw.hidePhone } };
 }
 
 class ServiceStore {
@@ -70,23 +83,25 @@ class ServiceStore {
         this.logger.info?.(`Развлечения: ${Object.keys(this.data.items).length}, ${(this.bytes / 1048576).toFixed(1)} МБ`);
     }
 
-    _view(s, full) {
+    _view(s, full, viewerId = null) {
         const u = this.accounts.byId(s.ownerId);
         return {
             id: s.id, ownerId: s.ownerId, ownerName: u ? u.name : s.ownerName, verified: !!(u && u.verifs && u.verifs.services),
             created: s.created, updated: s.updated, title: s.title, text: full ? s.text : s.text.slice(0, 140), city: s.city,
             tag: s.tag, unit: s.unit, price: s.price, thumb: s.thumb || '', photoCount: s.photos.length,
             place: s.place || '', coords: s.coords || null,
+            // телефон видят все, если автор его не скрыл; сам автор видит всегда (чтобы изменить)
+            phone: s.phone && (!s.hidePhone || (viewerId && viewerId === s.ownerId)) ? s.phone : '', hidePhone: !!s.hidePhone,
             ...(full ? { photos: s.photos } : {})
         };
     }
 
     // Лента: свежие сверху. owner — карточки одного человека
-    list({ ownerId = '', limit = 60 } = {}) {
+    list({ ownerId = '', limit = 60, viewerId = null } = {}) {
         return Object.values(this.data.items).filter(s => !ownerId || s.ownerId === ownerId)
-            .sort((a, b) => b.updated - a.updated).slice(0, limit).map(s => this._view(s, false));
+            .sort((a, b) => b.updated - a.updated).slice(0, limit).map(s => this._view(s, false, viewerId));
     }
-    get(id) { const s = typeof id === 'string' ? this.data.items[id] : null; return s ? this._view(s, true) : null; }
+    get(id, viewerId = null) { const s = typeof id === 'string' ? this.data.items[id] : null; return s ? this._view(s, true, viewerId) : null; }
     count(ownerId) { return Object.values(this.data.items).filter(s => s.ownerId === ownerId).length; }
 
     async save(user, payload) {
@@ -111,7 +126,7 @@ class ServiceStore {
             this.logger.error?.(`services: ${e.code || e.message}`);
             return fail('STORE_UNAVAILABLE');
         }
-        return { ok: true, service: this._view(s, true), created: !prev };
+        return { ok: true, service: this._view(s, true, user.id), created: !prev };
     }
 
     // «Опубликовать заново»: карточка встаёт наверх ленты без правок
