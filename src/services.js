@@ -12,7 +12,7 @@ const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, validateImage, fail } = require('./validate');
 
-const MAX_PER_USER = 10, MAX_PHOTOS = 4, PHOTO_BYTES = 350_000, THUMB_BYTES = 60_000, MAP_PHOTO_BYTES = 70_000;
+const MAX_PER_USER = 10, MAX_PHOTOS = 4, PHOTO_BYTES = 350_000, THUMB_BYTES = 80_000, MAP_PHOTO_BYTES = 70_000;
 const MAX_BYTES = 80 * 1048576;                       // общий потолок services.json
 const BUMP_COOLDOWN_MS = 6 * 3600 * 1000;
 const TAGS = ['sea', 'tours', 'active', 'kids', 'show', 'food', 'other'];   // морские прогулки, экскурсии, активный отдых, детям, шоу и вечера, еда
