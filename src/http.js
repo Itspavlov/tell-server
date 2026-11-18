@@ -1450,9 +1450,9 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.dvizTalk.hit(user.id);
         if (!rl.ok) return limited(res, rl);
-        const r = await dviz.comment(user, req.params.id, req.body && req.body.text);
+        const r = await dviz.comment(user, req.params.id, req.body && req.body.text, req.body && req.body.replyTo);
         if (!r.ok) return dvizFail(res, r);
-        if (notifier && r.ownerId && r.ownerId !== user.id) notifier.notify([r.ownerId], { kind: 'dviz', title: user.name + ' · ' + trunc(r.title, 40), body: trunc(r.comment.text, 100), open: 'dviz:' + req.params.id, tag: 'dviz:' + req.params.id });
+        // комментарии без уведомлений: у получателя на карточке и на группе появляется счётчик новых
         if (io && typeof io.emit === 'function') io.emit('dviz-changed', { id: req.params.id });
         res.json({ ok: true, comment: r.comment, comments: r.event.comments });
     }

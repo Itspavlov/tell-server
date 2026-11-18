@@ -91,7 +91,7 @@ class DvizStore {
             ...(full ? {
                 photos: e.photos,
                 joinList: e.joins.map(j => ({ userId: j.userId, name: (this.accounts.byId(j.userId) || { name: j.name }).name, time: j.time })),
-                commentList: e.comments.map(c => ({ id: c.id, userId: c.userId, name: (this.accounts.byId(c.userId) || { name: c.name }).name, text: c.text, time: c.time }))
+                commentList: e.comments.map(c => ({ id: c.id, userId: c.userId, name: (this.accounts.byId(c.userId) || { name: c.name }).name, text: c.text, time: c.time, reply: c.reply ? { id: c.reply.id, name: (this.accounts.byId(c.reply.userId) || { name: c.reply.name }).name, text: c.reply.text } : null }))
             } : {})
         };
     }
@@ -139,18 +139,21 @@ class DvizStore {
         return { ok: true, event: e };
     }
 
-    async comment(user, id, rawText) {
+    async comment(user, id, rawText, replyTo = null) {
         const e = typeof id === 'string' ? this.data.items[id] : null;
         if (!e || !this._alive(e)) return fail('DVIZ_NOT_FOUND');
         const t = normalizeText(typeof rawText === 'string' ? rawText : '', COMMENT_MAX);
         if (!t.ok || !t.value) return fail('EMPTY_MESSAGE');
         const c = { id: 'dc_' + this.now() + '_' + crypto.randomBytes(4).toString('hex'), userId: user.id, name: user.name, text: t.value, time: this.now() };
+        // ответ человеку: храним имя и начало его комментария (если тот уже удалён — это обычный комментарий)
+        const to = typeof replyTo === 'string' ? e.comments.find(x => x.id === replyTo) : null;
+        if (to) c.reply = { id: to.id, userId: to.userId, name: to.name, text: String(to.text).slice(0, 80) };
         e.comments.push(c);
         const dropped = [];
         while (e.comments.length > COMMENT_CAP) dropped.push(e.comments.shift());
         try { await this.file.save(this.data); }
         catch (err) { const i = e.comments.lastIndexOf(c); if (i >= 0) e.comments.splice(i, 1); e.comments.unshift(...dropped); return fail('STORE_UNAVAILABLE'); }
-        return { ok: true, comment: { id: c.id, userId: c.userId, name: c.name, text: c.text, time: c.time }, event: this._view(e, user.id, false), ownerId: e.ownerId, title: e.title };
+        return { ok: true, comment: { id: c.id, userId: c.userId, name: c.name, text: c.text, time: c.time, reply: c.reply || null }, event: this._view(e, user.id, false), ownerId: e.ownerId, title: e.title };
     }
 
     async removeComment(user, id, commentId, { admin = false } = {}) {

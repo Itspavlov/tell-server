@@ -109,7 +109,7 @@ test('движ: комментарии и отклики, уведомления
 
     r = res(); await h.dvizComment(req({ headers: as(b), params: { id }, body: { text: 'Я за! Сколько стоит?' } }), r);
     assert.equal(r.code, 200); assert.equal(r.body.comments, 1);
-    assert.equal(sent.at(-1).ids[0], a.id);
+    assert.equal(sent.length, 0, 'комментарий не шлёт уведомление');
     r = res(); await h.dvizComment(req({ headers: as(b), params: { id }, body: { text: '   ' } }), r);
     assert.equal(r.code, 400);
 
@@ -171,5 +171,19 @@ test('движ: сохраняется после перезапуска, сме
     await again.init();
     assert.equal(again.get(e.id).commentList[0].text, 'Жду всех');
     assert.equal(await dviz.renameOwner(a.id, 'Анна2') > 0, true);
+    await store.close();
+});
+
+test('движ: ответ на комментарий свайпом хранит автора и начало текста', async () => {
+    const { dviz, reg, store } = await setup();
+    const a = await reg('Анна'), b = await reg('Борис');
+    const e = (await dviz.create(a, DV())).event;
+    const c1 = (await dviz.comment(b, e.id, 'Сколько стоит?')).comment;
+    const c2 = (await dviz.comment(a, e.id, 'Две тысячи', c1.id)).comment;
+    assert.equal(c2.reply.name, 'Борис');
+    assert.equal(c2.reply.text, 'Сколько стоит?');
+    const c3 = (await dviz.comment(a, e.id, 'без ответа', 'dc_нет')).comment;
+    assert.equal(c3.reply, null);
+    assert.equal(dviz.get(e.id).commentList[1].reply.name, 'Борис');
     await store.close();
 });
