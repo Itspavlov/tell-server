@@ -157,3 +157,29 @@ test('услуга: телефон приводится к +7, невалидн�
     assert.equal(services.list({ viewerId: b.id }).find(x => x.id === open.service.id).phone, '+79001112233');
     await store.close();
 });
+
+test('услуга: фото-ориентир для карты — только с точкой, в списке только признак, полное по id, правка без поля его не стирает', async () => {
+    const { services, reg } = await setup();
+    const a = await reg('Капитан');
+    let r = await services.save(a, SV({ coords: [44.36, 38.52], mapPhoto: PNG }));
+    assert.equal(r.ok, true);
+    const id = r.service.id;
+    assert.equal(r.service.mapPhoto, PNG);
+    const l = services.list({}).find(x => x.id === id);
+    assert.equal(l.hasMapPhoto, true);
+    assert.equal(l.mapPhoto, undefined, 'в ленту картинку не кладём');
+    assert.equal(services.get(id).mapPhoto, PNG);
+    // старый клиент не присылает поле: ориентир остаётся
+    r = await services.save(a, SV({ id, coords: [44.36, 38.52] }));
+    assert.equal(services.get(id).mapPhoto, PNG);
+    // пустое значение убирает
+    r = await services.save(a, SV({ id, coords: [44.36, 38.52], mapPhoto: '' }));
+    assert.equal(services.get(id).mapPhoto, '');
+    assert.equal(services.list({}).find(x => x.id === id).hasMapPhoto, false);
+    // без точки ориентир не нужен: не сохраняем
+    r = await services.save(a, SV({ mapPhoto: PNG }));
+    assert.equal(r.ok, true); assert.equal(r.service.mapPhoto, '');
+    // мусор вместо картинки
+    assert.equal((await services.save(a, SV({ coords: [44.36, 38.52], mapPhoto: 'http://evil/x.png' }))).code, 'IMAGE_INVALID');
+    assert.equal((await services.save(a, SV({ coords: [44.36, 38.52], mapPhoto: 5 }))).code, 'IMAGE_INVALID');
+});

@@ -12,7 +12,7 @@ const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, validateImage, fail } = require('./validate');
 
-const MAX_PER_USER = 10, MAX_PHOTOS = 4, PHOTO_BYTES = 350_000, THUMB_BYTES = 60_000;
+const MAX_PER_USER = 10, MAX_PHOTOS = 4, PHOTO_BYTES = 350_000, THUMB_BYTES = 60_000, MAP_PHOTO_BYTES = 70_000;
 const MAX_BYTES = 80 * 1048576;                       // общий потолок services.json
 const BUMP_COOLDOWN_MS = 6 * 3600 * 1000;
 const TAGS = ['sea', 'tours', 'active', 'kids', 'show', 'food', 'other'];   // морские прогулки, экскурсии, активный отдых, детям, шоу и вечера, еда
@@ -65,7 +65,14 @@ function cleanService(raw) {
     let thumb = '';
     if (raw.thumb) { const r = validateImage(raw.thumb, THUMB_BYTES); if (!r.ok) return fail('IMAGE_INVALID'); thumb = r.value; }
     else if (photos[0] && photos[0].length <= Math.ceil(THUMB_BYTES * 4 / 3) + 128) thumb = photos[0];
-    return { ok: true, value: { title: t.value, text: d.value, city: c.value, place: pl.value, coords, tag, unit, price, photos, thumb, phone: ph.value, hidePhone: !!raw.hidePhone } };
+    // Фото-ориентир для карты: маленькая картинка рядом с меткой («синий катер», «вход на причал»). Нужна только вместе с точкой.
+    let mapPhoto;
+    if (raw.mapPhoto !== undefined && raw.mapPhoto !== null && raw.mapPhoto !== '') {
+        if (typeof raw.mapPhoto !== 'string') return fail('IMAGE_INVALID');
+        const r = validateImage(raw.mapPhoto, MAP_PHOTO_BYTES); if (!r.ok) return fail('IMAGE_INVALID');
+        mapPhoto = coords ? r.value : '';
+    } else if (raw.mapPhoto === '' || raw.mapPhoto === null || !coords) mapPhoto = '';
+    return { ok: true, value: { title: t.value, text: d.value, city: c.value, place: pl.value, coords, tag, unit, price, photos, thumb, phone: ph.value, hidePhone: !!raw.hidePhone, ...(mapPhoto !== undefined ? { mapPhoto } : {}) } };
 }
 
 class ServiceStore {
@@ -89,10 +96,10 @@ class ServiceStore {
             id: s.id, ownerId: s.ownerId, ownerName: u ? u.name : s.ownerName, verified: !!(u && u.verifs && u.verifs.services),
             created: s.created, updated: s.updated, title: s.title, text: full ? s.text : s.text.slice(0, 140), city: s.city,
             tag: s.tag, unit: s.unit, price: s.price, thumb: s.thumb || '', photoCount: s.photos.length,
-            place: s.place || '', coords: s.coords || null,
+            place: s.place || '', coords: s.coords || null, hasMapPhoto: !!s.mapPhoto,
             // телефон видят все, если автор его не скрыл; сам автор видит всегда (чтобы изменить)
             phone: s.phone && (!s.hidePhone || (viewerId && viewerId === s.ownerId)) ? s.phone : '', hidePhone: !!s.hidePhone,
-            ...(full ? { photos: s.photos } : {})
+            ...(full ? { photos: s.photos, mapPhoto: s.mapPhoto || '' } : {})
         };
     }
 
