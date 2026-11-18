@@ -178,6 +178,47 @@ class ListingStore {
 
     list() { return this.page({ limit: 200 }).listings; }
 
+    // Карта: отдаём только то, что попало в кадр. Если точек много, склеиваем их в кружки с числом, так что хоть 10 000 объявлений
+    // не тянут за собой 10 000 меток. test(объявление) — фильтры; skip(id, ownerId) — скрытые по жалобам.
+    // bbox = [юг, запад, север, восток], zoom — масштаб карты.
+    mapView({ bbox, zoom = 14, test = null, skip = null, maxPins = 120, maxClusters = 200 } = {}) {
+        const [s, w, n, e] = bbox;
+        const padLat = (n - s) * 0.15, padLng = (e - w) * 0.15;
+        const S = s - padLat, N = n + padLat, W = w - padLng, E = e + padLng;
+        let total = 0, noPoint = 0;
+        const inBox = [];
+        for (const l of Object.values(this.data.listings)) {
+            const a = l.ad;
+            if (skip && skip(l.id, l.ownerId)) continue;
+            if (test) {
+                const u = this.accounts.byId(l.ownerId);
+                if (!test({ category: a.category || 'apartment', location: a.location, title: a.title, description: a.description, priceNum: a.priceNum,
+                    type: a.type, busy: a.busy, form: a.form, facts: a.facts, coords: a.coords, beach: a.beach, amenities: a.amenities, isVerified: !!(u && u.verified) })) continue;
+            }
+            total++;
+            const c = a.coords;
+            if (!Array.isArray(c) || c.length !== 2 || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) { noPoint++; continue; }
+            if (c[0] < S || c[0] > N || c[1] < W || c[1] > E) continue;
+            inBox.push({ id: l.id, c, price: a.price, priceNum: a.priceNum, title: String(a.title || '').slice(0, 60) });
+        }
+        const pin = (x) => ({ id: x.id, coords: x.c, price: x.price, priceNum: x.priceNum, title: x.title });
+        if (inBox.length <= maxPins) return { total, noPoint, inView: inBox.length, pins: inBox.map(pin), clusters: [] };
+        const cell = 360 / Math.pow(2, Math.max(1, Math.min(20, Math.round(zoom)))) * (84 / 256);
+        const cells = new Map();
+        for (const x of inBox) {
+            const k = Math.floor(x.c[0] / cell) + ':' + Math.floor(x.c[1] / cell);
+            const g = cells.get(k);
+            if (g) { g.n++; g.lat += x.c[0]; g.lng += x.c[1]; } else cells.set(k, { n: 1, lat: x.c[0], lng: x.c[1], one: x });
+        }
+        const pins = [], clusters = [];
+        for (const g of cells.values()) {
+            if (g.n === 1) pins.push(pin(g.one));
+            else clusters.push({ coords: [Math.round(g.lat / g.n * 1e5) / 1e5, Math.round(g.lng / g.n * 1e5) / 1e5], count: g.n });
+        }
+        clusters.sort((a, b) => b.count - a.count);
+        return { total, noPoint, inView: inBox.length, pins: pins.slice(0, maxPins), clusters: clusters.slice(0, maxClusters) };
+    }
+
     get(id, full = true) {
         const l = typeof id === 'string' ? this.data.listings[id] : null;
         return l ? this._compose(l, full) : null;

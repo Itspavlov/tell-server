@@ -269,3 +269,68 @@ test('page: курсор отдаёт всё без потерь и сообща
     assert.deepEqual(p3.listings.map(x => x.id), ['l0']);
     assert.equal(p3.next, null);
 });
+
+// ---- карта: только то, что в кадре, плотные места — кружками ----
+async function many(h, u, n, mk) {
+    for (let i = 0; i < n; i++) {
+        const r = res();
+        await h.listingSave(req({ headers: auth(u.token), body: { ad: AD(mk(i)), profile: PROFILE } }), r);
+        assert.equal(r.code, 200, 'сохранилось ' + i + ' ' + JSON.stringify(r.body));
+    }
+}
+const mapQ = (o) => req({ query: o });
+
+test('карта: в кадре только своё, лишнее отсекается, без точки считается отдельно', async () => {
+    const { h, reg, store } = await setup({ dailyListings: 500 });
+    const u = await reg('Хозяйка');
+    await many(h, u, 3, (i) => ({ title: 'Дом ' + i, coords: [44.89 + i * 0.001, 37.31] }));
+    await many(h, u, 1, () => ({ title: 'Далеко', coords: [55.7, 37.6] }));
+    await many(h, u, 1, () => ({ title: 'Без точки', coords: null }));
+    let r = res(); h.listingsMap(mapQ({ bbox: '44.8,37.2,45.0,37.4', z: '14' }), r);
+    assert.equal(r.code, 200);
+    assert.equal(r.body.pins.length, 3);
+    assert.equal(r.body.clusters.length, 0);
+    assert.equal(r.body.noPoint, 1);
+    assert.equal(r.body.total, 5);
+    assert.ok(r.body.pins.every(p => p.id && Array.isArray(p.coords) && !p.thumb && !p.image), 'фото на карту не отдаём');
+    await store.close();
+});
+
+test('карта: тысячи объявлений не тянем — кружки и ограничение числа меток', async () => {
+    const { h, reg, listings, store } = await setup({ dailyListings: 5000 });
+    const u = await reg('Хозяйка');
+    // быстрые вставки напрямую в хранилище, чтобы не гонять 600 сохранений через http
+    const base = listings.data.listings;
+    for (let i = 0; i < 600; i++) {
+        const id = 'ls_t' + i;
+        base[id] = { id, ownerId: u.id, ownerName: 'Хозяйка', created: i, updated: i, owner: {}, ad: { ...AD(), coords: [44.85 + (i % 30) * 0.003, 37.25 + Math.floor(i / 30) * 0.004], photos: [], thumb: '' } };
+    }
+    let r = res(); h.listingsMap(mapQ({ bbox: '44.7,37.1,45.1,37.5', z: '11' }), r);
+    assert.equal(r.code, 200);
+    assert.equal(r.body.inView, 600);
+    assert.ok(r.body.clusters.length > 0 && r.body.clusters.length <= 200);
+    assert.ok(r.body.pins.length <= 120);
+    const sum = r.body.clusters.reduce((a, c) => a + c.count, 0) + r.body.pins.length;
+    assert.equal(sum, 600, 'каждое объявление учтено либо меткой, либо кружком');
+    // приблизили — вся мелочь превращается в метки или меньшие кружки
+    r = res(); h.listingsMap(mapQ({ bbox: '44.85,37.25,44.86,37.26', z: '17' }), r);
+    assert.ok(r.body.inView < 20);
+    assert.equal(r.body.clusters.length, 0);
+    await store.close();
+});
+
+test('карта: фильтры как у подписки на поиск, кривые параметры', async () => {
+    const { h, reg, store } = await setup({ dailyListings: 500 });
+    const u = await reg('Хозяйка');
+    await many(h, u, 1, () => ({ title: 'Дёшево', priceNum: 1000 }));
+    await many(h, u, 1, () => ({ title: 'Дорого', priceNum: 9000, coords: [44.891, 37.311] }));
+    let r = res(); h.listingsMap(mapQ({ bbox: '44.8,37.2,45.0,37.4', f: JSON.stringify({ max: 2000 }) }), r);
+    assert.equal(r.body.pins.length, 1);
+    assert.equal(r.body.pins[0].title, 'Дёшево');
+    assert.equal(r.body.total, 1);
+    for (const q of [{}, { bbox: 'a,b,c,d' }, { bbox: '1,2,3' }, { bbox: '50,10,40,20' }, { bbox: '44,37,45,38', f: '{oops' }, { bbox: '44,37,45,38', f: JSON.stringify({ min: 5000, max: 10 }) }]) {
+        r = res(); h.listingsMap(mapQ(q), r);
+        assert.equal(r.code, 400, JSON.stringify(q));
+    }
+    await store.close();
+});

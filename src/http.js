@@ -9,6 +9,7 @@ const { isValidRoom } = require('./validate');
 const { isOriginAllowed } = require('./config');
 const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
+const { cleanFilter, matches: matchesFilter } = require('./searches');
 
 function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
@@ -1051,6 +1052,34 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true, listings: hideFor('listing', pg.listings, reports && reports.hiddenIds('listing').size ? viewerOf(req) : null), next: pg.next, total: pg.total });
     }
 
+    // Карта: объявления только из видимой области. ?bbox=юг,запад,север,восток&z=масштаб&f=фильтры (JSON, как у подписки на поиск)
+    function listingsMap(req, res) {
+        if (!listings) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const q = req.query || {};
+        const bb = String(q.bbox || '').split(',').map(Number);
+        if (bb.length !== 4 || !bb.every(Number.isFinite) || Math.abs(bb[0]) > 90 || Math.abs(bb[2]) > 90 || Math.abs(bb[1]) > 180 || Math.abs(bb[3]) > 180 || bb[0] > bb[2] || bb[1] > bb[3]) {
+            return res.status(400).json({ ok: false, code: 'BAD_REQUEST', message: 'Неверная область карты' });
+        }
+        let filter = null;
+        if (q.f) {
+            let raw = null;
+            try { raw = JSON.parse(String(q.f).slice(0, 2000)); } catch (_) { raw = null; }
+            filter = raw ? cleanFilter(raw) : null;
+            if (!filter) return res.status(400).json({ ok: false, code: 'BAD_REQUEST', message: 'Неверные фильтры' });
+        }
+        const hid = reports ? reports.hiddenIds('listing') : null;
+        const viewer = hid && hid.size ? viewerOf(req) : null;
+        const r = listings.mapView({
+            bbox: bb, zoom: Number(q.z) || 14,
+            test: filter ? (ad) => matchesFilter(filter, ad) : null,
+            skip: hid && hid.size ? (id, ownerId) => hid.has(id) && !(viewer && ownerId === viewer) : null
+        });
+        res.set('Cache-Control', 'no-store');
+        res.json({ ok: true, ...r });
+    }
+
     function listingGet(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const r = limiters.history.hit(ipOf(req));
@@ -1556,7 +1585,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingsMap, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
 function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push, pushStore, notifier, logger }) {
@@ -1648,6 +1677,7 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.post('/api/searches', express.json({ limit: '2kb' }), h.searchAdd);
     app.delete('/api/searches/:id', h.searchRemove);
     app.get('/api/listings', h.listingsList);
+    app.get('/api/listings/map', h.listingsMap);
     app.get('/api/listings/quota', h.listingQuota);
     app.get('/api/invites/me', h.invitesMe);
     app.get('/api/listings/:id', h.listingGet);
