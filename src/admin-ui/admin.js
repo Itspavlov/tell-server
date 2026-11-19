@@ -442,7 +442,8 @@
             await api('POST', '/afisha', payload);
             reset(); draw(await api('GET', '/afisha'));
         }, 'Сохранено') }, 'Добавить в афишу');
-        const cancelBtn = el('button', { class: 'btn', style: 'display:none', onclick: reset }, 'Отменить правку');
+        const cancelBtn = el('button', { class: 'btn', onclick: reset }, 'Отменить правку');
+        cancelBtn.style.display = 'none';
         const form = el('div', { class: 'card af-form' }, head,
             el('div', { class: 'af-row' }, field('Вид', f.kind), whenBox), field('Заголовок', f.title), field('Текст', f.text), field('Место', f.place),
             el('div', { class: 'af-row' }, field('Широта (необязательно)', f.lat), field('Долгота (необязательно)', f.lng)),
