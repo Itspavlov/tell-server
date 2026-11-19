@@ -183,3 +183,15 @@ test('услуга: фото-ориентир для карты — только
     assert.equal((await services.save(a, SV({ coords: [44.36, 38.52], mapPhoto: 'http://evil/x.png' }))).code, 'IMAGE_INVALID');
     assert.equal((await services.save(a, SV({ coords: [44.36, 38.52], mapPhoto: 5 }))).code, 'IMAGE_INVALID');
 });
+
+test('горизонтальная обложка thumbW: сохраняется, попадает в список, плохая — отклоняется', async () => {
+    const { services, reg, store } = await setup();
+    const a = await reg('Анна');
+    const r = await services.save(a, SV({ thumbW: PNG }));
+    assert.equal(r.ok, true);
+    assert.equal(r.service.thumbW, PNG);
+    assert.equal(services.list({}).find(x => x.id === r.service.id).thumbW, PNG);
+    assert.equal((await services.save(a, SV({ title: 'Без обложки' }))).service.thumbW, '');
+    assert.equal((await services.save(a, SV({ thumbW: 'data:image/png;base64,AAAA' }))).code, 'IMAGE_INVALID');
+    await store.close();
+});

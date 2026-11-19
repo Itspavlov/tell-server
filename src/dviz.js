@@ -12,7 +12,7 @@ const path = require('path');
 const { JsonFile } = require('./jsonfile');
 const { normalizeText, validateImage, fail } = require('./validate');
 
-const MAX_ACTIVE_PER_USER = 5, MAX_PHOTOS = 5, PHOTO_BYTES = 300_000, THUMB_BYTES = 60_000;
+const MAX_ACTIVE_PER_USER = 5, MAX_PHOTOS = 5, PHOTO_BYTES = 300_000, THUMB_BYTES = 60_000, THUMBW_BYTES = 60_000;
 const MAX_BYTES = 120 * 1048576;
 const COMMENT_CAP = 200, JOIN_CAP = 200, COMMENT_MAX = 400;
 const DAY = 86400000, HOUR = 3600000;
@@ -58,7 +58,9 @@ function cleanDviz(raw, now) {
     let thumb = '';
     if (raw.thumb) { const r = validateImage(raw.thumb, THUMB_BYTES); if (!r.ok) return fail('IMAGE_INVALID'); thumb = r.value; }
     else if (photos[0] && photos[0].length <= Math.ceil(THUMB_BYTES * 4 / 3) + 128) thumb = photos[0];
-    return { ok: true, value: { title: t.value, text: d.value, place: p.value, when, max, photos, thumb, ...(coords ? { coords } : {}) } };
+    let thumbW = '';
+    if (raw.thumbW) { const r = validateImage(raw.thumbW, THUMBW_BYTES); if (!r.ok) return fail('IMAGE_INVALID'); thumbW = r.value; }
+    return { ok: true, value: { title: t.value, text: d.value, place: p.value, when, max, photos, thumb, thumbW, ...(coords ? { coords } : {}) } };
 }
 
 class DvizStore {
@@ -85,7 +87,7 @@ class DvizStore {
         return {
             id: e.id, ownerId: e.ownerId, ownerName: u ? u.name : e.ownerName, verified: !!(u && u.verified),
             created: e.created, title: e.title, text: full ? e.text : e.text.slice(0, 160), place: e.place, coords: e.coords || null, when: e.when, max: e.max,
-            thumb: e.thumb || '', photoCount: e.photos.length, attached: e.attached || null,
+            thumb: e.thumb || '', thumbW: e.thumbW || '', photoCount: e.photos.length, attached: e.attached || null,
             comments: e.comments.length, joins: e.joins.length, joined, expires: this._expires(e),
             joinNames: e.joins.slice(0, 3).map(j => (this.accounts.byId(j.userId) || { name: j.name }).name),
             ...(full ? {
