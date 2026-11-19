@@ -112,7 +112,7 @@
         ['Главное', [['overview', 'Обзор']]],
         ['Люди', [['verify', 'Верификация'], ['users', 'Пользователи'], ['reports', 'Жалобы']]],
         ['Контент', [['listings', 'Объявления'], ['requests', 'Ищу / Предлагаю'], ['services', 'Развлечения'], ['dviz', 'Курортный движ'], ['reviews', 'Отзывы'], ['chats', 'Чаты']]],
-        ['Сайт', [['weather', 'Погода']]],
+        ['Сайт', [['afisha', 'Афиша'], ['weather', 'Погода']]],
         ['Система', [['audit', 'Журнал']]]
     ];
     const BADGE = { verify: 'verify', reports: 'reports' };
@@ -133,7 +133,7 @@
             el('aside', { class: 'side' }, el('div', { class: 'brand' }, el('span', { class: 'logo' }, 'YG'), el('b', {}, 'Модерация')), nav,
                 el('button', { class: 'btn ghost wide', onclick: () => logout() }, 'Выйти')),
             el('main', { class: 'main' }, el('h2', { class: 'page-title' }, title), body)));
-        const views = { overview: vOverview, verify: vVerify, users: vUsers, chats: vChats, listings: vListings, requests: vRequests, dviz: vDviz, reports: vReports, reviews: vReviews, services: vServices, weather: vWeather, audit: vAudit };
+        const views = { overview: vOverview, verify: vVerify, users: vUsers, chats: vChats, listings: vListings, requests: vRequests, dviz: vDviz, reports: vReports, reviews: vReviews, services: vServices, afisha: vAfisha, weather: vWeather, audit: vAudit };
         run(body, views[tab]);
         refreshCounts();
         const on = nav.querySelector('.nav-item.on'); if (on && on.scrollIntoView) on.scrollIntoView({ inline: 'center', block: 'nearest' });
@@ -374,6 +374,100 @@
                 el('button', { class: 'btn bad', onclick: () => guarded('Удалить движ «' + x.title + '» автора ' + x.ownerName + '?', () => api('DELETE', '/dviz/' + encodeURIComponent(x.id)), 'Движ удалён', true, 'Удалить') }, 'Удалить')))));
     }
 
+    // ---------- Афиша: главная, «Чем заняться сегодня?» ----------
+    const AF_KIND = { event: 'Событие', story: 'История', place: 'Интересное место', news: 'Новость' };
+    const AF_ICON = { event: '🎤', story: '📖', place: '🏞️', news: '📰' };
+    const readFile = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); });
+    const loadImg = (src) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = src; });
+    // из выбранного файла делаем две картинки: целую (для открытой записи) и обложку под плитку на главной (в ту же пропорцию, что у плитки)
+    async function makeImages(file) {
+        const img = await loadImg(await readFile(file));
+        const draw = (w, h, sx, sy, sw, sh, q) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(img, sx, sy, sw, sh, 0, 0, w, h); return c.toDataURL('image/jpeg', q); };
+        let image = '';
+        for (const [side, q] of [[1280, 0.82], [1100, 0.75], [900, 0.7], [720, 0.65]]) {
+            const k = Math.min(1, side / Math.max(img.width, img.height));
+            image = draw(Math.round(img.width * k), Math.round(img.height * k), 0, 0, img.width, img.height, q);
+            if (image.length <= 440000) break;
+        }
+        let thumb = '';
+        for (const [w, h, q] of [[440, 630, 0.74], [400, 570, 0.68], [360, 515, 0.62], [300, 430, 0.58]]) {
+            const k = Math.max(w / img.width, h / img.height), sw = w / k, sh = h / k;
+            thumb = draw(w, h, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, q);
+            if (thumb.length <= 106000) break;
+        }
+        return { image, thumb };
+    }
+    async function vAfisha(body) {
+        let d = await api('GET', '/afisha');
+        let editing = null, pic = undefined;      // pic: undefined — картинку не трогаем; {image, thumb} — новая; '' — убрать
+        const f = {};
+        const field = (label, node) => el('label', { class: 'af-field' }, el('span', { class: 'mut' }, label), node);
+        f.kind = el('select', {}, ...Object.entries(AF_KIND).map(([v, t]) => el('option', { value: v }, t)));
+        f.title = el('input', { type: 'text', maxlength: '80', placeholder: 'Например: Концерт на набережной' });
+        f.text = el('textarea', { rows: '5', maxlength: '2000', placeholder: 'Что будет, где, во сколько. Для истории и места — сам рассказ.' });
+        f.when = el('input', { type: 'datetime-local' });
+        f.place = el('input', { type: 'text', maxlength: '120', placeholder: 'Где: набережная, водопад, смотровая' });
+        f.lat = el('input', { type: 'number', step: 'any', placeholder: 'Широта, например 44.3625' });
+        f.lng = el('input', { type: 'number', step: 'any', placeholder: 'Долгота, например 38.5265' });
+        f.link = el('input', { type: 'text', maxlength: '300', placeholder: 'Ссылка на билеты или подробности (https://…)' });
+        f.pinned = el('input', { type: 'checkbox' });
+        f.file = el('input', { type: 'file', accept: 'image/*' });
+        f.prev = el('div', { class: 'af-prev' });
+        const paintPrev = () => {
+            const src = pic && pic.thumb ? pic.thumb : (editing && pic === undefined ? editing.thumb : '');
+            f.prev.replaceChildren(...(safeImg(src) ? [el('img', { src, alt: '' }), el('button', { class: 'btn', onclick: () => { pic = ''; paintPrev(); } }, 'Убрать фото')] : [el('span', { class: 'mut' }, 'Фото не выбрано')]));
+        };
+        f.file.addEventListener('change', async () => {
+            const file = f.file.files && f.file.files[0]; f.file.value = '';
+            if (!file) return;
+            try { pic = await makeImages(file); paintPrev(); } catch (e) { toast('Не удалось обработать фото'); }
+        });
+        const syncKind = () => { whenBox.style.display = f.kind.value === 'event' ? '' : 'none'; };
+        f.kind.addEventListener('change', syncKind);
+        const whenBox = field('Дата и время (по Москве)', f.when);
+        const reset = () => { editing = null; pic = undefined; f.kind.value = 'event'; for (const k of ['title', 'text', 'when', 'place', 'lat', 'lng', 'link']) f[k].value = ''; f.pinned.checked = false; syncKind(); paintPrev(); head.textContent = 'Новая запись'; saveBtn.textContent = 'Добавить в афишу'; cancelBtn.style.display = 'none'; };
+        const fill = (it) => {
+            editing = it; pic = undefined;
+            f.kind.value = it.kind; f.title.value = it.title; f.text.value = it.text; f.when.value = it.when || ''; f.place.value = it.place || '';
+            f.lat.value = it.coords ? it.coords[0] : ''; f.lng.value = it.coords ? it.coords[1] : ''; f.link.value = it.link || ''; f.pinned.checked = !!it.pinned;
+            syncKind(); paintPrev(); head.textContent = 'Правка записи'; saveBtn.textContent = 'Сохранить'; cancelBtn.style.display = ''; window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+        const head = el('b', {}, 'Новая запись');
+        const saveBtn = el('button', { class: 'btn ok', onclick: () => act(async () => {
+            const lat = f.lat.value.trim(), lng = f.lng.value.trim();
+            const payload = { ...(editing ? { id: editing.id } : {}), kind: f.kind.value, title: f.title.value, text: f.text.value, place: f.place.value, link: f.link.value.trim(),
+                when: f.kind.value === 'event' ? f.when.value : '', pinned: f.pinned.checked, coords: lat && lng ? [Number(lat), Number(lng)] : null };
+            if (pic === '') payload.image = '';
+            else if (pic) { payload.image = pic.image; payload.thumb = pic.thumb; }
+            await api('POST', '/afisha', payload);
+            reset(); draw(await api('GET', '/afisha'));
+        }, 'Сохранено') }, 'Добавить в афишу');
+        const cancelBtn = el('button', { class: 'btn', style: 'display:none', onclick: reset }, 'Отменить правку');
+        const form = el('div', { class: 'card af-form' }, head,
+            el('div', { class: 'af-row' }, field('Вид', f.kind), whenBox), field('Заголовок', f.title), field('Текст', f.text), field('Место', f.place),
+            el('div', { class: 'af-row' }, field('Широта (необязательно)', f.lat), field('Долгота (необязательно)', f.lng)),
+            field('Ссылка', f.link), field('Фото', el('div', {}, f.file, f.prev)),
+            el('label', { class: 'af-check' }, f.pinned, el('span', {}, ' Закрепить сверху (всегда первым на главной)')),
+            el('div', { class: 'actions' }, saveBtn, cancelBtn),
+            el('p', { class: 'mut' }, 'Запись сразу появится на главной в «Чем заняться сегодня?». Событие с датой пропадёт само через 6 часов после начала, история и место остаются, пока вы их не уберёте. Координаты можно взять в Яндекс Картах: клик правой кнопкой по точке.'));
+        const list = el('div', { id: 'afList' });
+        function draw(data) {
+            d = data;
+            list.replaceChildren(...(d.items.length ? d.items.map(x => el('div', { class: 'card item' },
+                safeImg(x.thumb) ? el('img', { class: 'af-thumb', src: x.thumb, alt: '' }) : el('span', { class: 'ava' }, AF_ICON[x.kind] || '•'),
+                el('div', { class: 'grow' },
+                    el('div', { class: 'head' }, el('b', {}, x.title), el('span', { class: 'pill' + (x.expired ? '' : ' ok') }, x.expired ? 'прошло' : AF_KIND[x.kind]), x.pinned ? el('span', { class: 'pill' }, '📌 закреплено') : null),
+                    el('div', { class: 'mut' }, [x.when ? x.when.replace('T', ' ') : '', x.place].filter(Boolean).join(' · ') || 'без даты'),
+                    el('div', { class: 'mut' }, (x.text || '').slice(0, 140))),
+                el('div', { class: 'actions' },
+                    el('button', { class: 'btn acc', onclick: () => act(async () => fill((await api('GET', '/afisha/' + encodeURIComponent(x.id))).item)) }, 'Править'),
+                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/afisha', { id: x.id, kind: x.kind, title: x.title, text: x.text, place: x.place, link: x.link, when: x.when, coords: x.coords, pinned: !x.pinned }); draw(await api('GET', '/afisha')); }, x.pinned ? 'Откреплено' : 'Закреплено') }, x.pinned ? 'Открепить' : 'Закрепить'),
+                    el('button', { class: 'btn bad', onclick: () => guarded('Убрать «' + x.title + '» из афиши?', async () => { await api('DELETE', '/afisha/' + encodeURIComponent(x.id)); draw(await api('GET', '/afisha')); }, 'Убрано', false, 'Убрать') }, 'Убрать')))) : [empty('В афише пока пусто. Добавьте первое событие, историю или интересное место.')]));
+        }
+        syncKind(); paintPrev(); draw(d);
+        body.replaceChildren(form, el('h3', { class: 'af-h' }, 'Сейчас в афише'), list);
+    }
+
     // ---------- Погода в шапке ----------
     async function vWeather(body) {
         const d = await api('GET', '/weather');
@@ -405,7 +499,7 @@
     }
 
     // ---------- Журнал ----------
-    const ACTION = { impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалён движ', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
+    const ACTION = { afisha_add: 'Афиша: добавлено', afisha_edit: 'Афиша: изменено', afisha_delete: 'Афиша: убрано', impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалён движ', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
     async function vAudit(body) {
         const d = await api('GET', '/audit?limit=200');
         if (!d.entries.length) { body.replaceChildren(empty('Журнал пуст')); return; }

@@ -25,6 +25,7 @@ const { FavoriteStore } = require('./src/favorites');
 const { ReviewStore } = require('./src/reviews');
 const { ServiceStore } = require('./src/services');
 const { DvizStore } = require('./src/dviz');
+const { AfishaStore } = require('./src/afisha');
 const { StatsStore } = require('./src/stats');
 const { SearchStore } = require('./src/searches');
 const { WeatherStore } = require('./src/weather');
@@ -73,6 +74,8 @@ async function start(env = process.env, logger = console) {
     await services.init();
     const dviz = new DvizStore({ dataDir: cfg.dataDir, accounts, services, logger });
     await dviz.init();
+    const afisha = new AfishaStore({ dataDir: cfg.dataDir, logger });
+    await afisha.init();
     const stats = new StatsStore({ dataDir: cfg.dataDir, logger });
     await stats.init();
     const searches = new SearchStore({ dataDir: cfg.dataDir, logger });
@@ -109,7 +112,7 @@ async function start(env = process.env, logger = console) {
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
 
-    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
+    const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, afisha, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
 
     const sweeper = setInterval(() => Object.values(limiters).forEach(l => l.sweep()), 60_000);

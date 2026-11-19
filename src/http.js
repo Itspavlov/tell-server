@@ -11,7 +11,7 @@ const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 const { cleanFilter, matches: matchesFilter } = require('./searches');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, afisha = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -1431,6 +1431,59 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
     ).json({ ok: false, code: r.code, message: r.message });
     const viewerOf = (req) => { const t = bearer(req); const u = t && accounts ? accounts.authenticate(t) : null; return u ? u.id : null; };
 
+    // ---------- афиша (главная: «Чем заняться сегодня?») ----------
+    const afishaFail = (res, r) => res.status(
+        r.code === 'AFISHA_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' || r.code === 'LISTINGS_FULL' ? 503 : 400
+    ).json({ ok: false, code: r.code, message: r.message });
+
+    function afishaList(req, res) {
+        if (!afisha) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        res.set('Cache-Control', 'public, max-age=30');
+        res.json({ ok: true, items: afisha.listPublic() });
+    }
+    function afishaGet(req, res) {
+        if (!afisha) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        const it = afisha.get(req.params.id);
+        if (!it) return afishaFail(res, { code: 'AFISHA_NOT_FOUND', message: 'Запись уже убрана из афиши' });
+        res.json({ ok: true, item: it });
+    }
+    async function adminAfishaList(req, res) {
+        if (!afisha) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_afisha', {}))) return;
+        res.json({ ok: true, items: afisha.listAll() });
+    }
+    async function adminAfishaGet(req, res) {
+        if (!afisha) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_afisha', {}))) return;
+        const it = afisha.getAny(req.params.id);
+        if (!it) return afishaFail(res, { code: 'AFISHA_NOT_FOUND', message: 'Запись не найдена' });
+        res.json({ ok: true, item: it });
+    }
+    async function adminAfishaSave(req, res) {
+        if (!afisha) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'save_afisha', {}))) return;
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const id = typeof body.id === 'string' ? body.id.slice(0, 40) : '';
+        const r = await afisha.save(body, id);
+        if (!r.ok) return afishaFail(res, r);
+        await admin.audit(id ? 'afisha_edit' : 'afisha_add', { id: trunc(r.item.id, 40), title: trunc(r.item.title, 60), ip: ipOf(req) });
+        if (io && typeof io.emit === 'function') io.emit('afisha-changed', { id: r.item.id });
+        res.json({ ok: true, item: r.item });
+    }
+    async function adminAfishaDelete(req, res) {
+        if (!afisha) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'delete_afisha', { id: trunc(req.params.id, 40) }))) return;
+        const r = await afisha.remove(req.params.id);
+        if (!r.ok) return afishaFail(res, r);
+        await admin.audit('afisha_delete', { id: trunc(req.params.id, 40), title: trunc(r.item.title, 60), ip: ipOf(req) });
+        if (io && typeof io.emit === 'function') io.emit('afisha-changed', { id: req.params.id, removed: true });
+        res.json({ ok: true });
+    }
+
     function dvizList(req, res) {
         if (!dviz) return res.status(404).json({ error: 'Not found' });
         const rl = limiters.history.hit(ipOf(req));
@@ -1585,15 +1638,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingsMap, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { afishaList, afishaGet, adminAfishaList, adminAfishaGet, adminAfishaSave, adminAfishaDelete, authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingsMap, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, afisha = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, afisha, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1611,7 +1664,12 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/admin', h.panel('html'));
     app.get('/admin/admin.js', h.panel('js'));
     app.get('/admin/admin.css', h.panel('css'));
+    // афиша: в теле картинка, поэтому лимит больше общего; маршрут стоит раньше общего разбора тела
+    app.post('/api/admin/afisha', express.json({ limit: '800kb' }), h.adminAfishaSave);
     app.use('/api/admin', express.json({ limit: '2kb' }));
+    app.get('/api/admin/afisha', h.adminAfishaList);
+    app.get('/api/admin/afisha/:id', h.adminAfishaGet);
+    app.delete('/api/admin/afisha/:id', h.adminAfishaDelete);
     app.post('/api/admin/verify', h.adminVerify);
     app.post('/api/admin/verify-reject', h.adminVerifyReject);
     app.get('/api/admin/verify-requests', h.adminVerifyRequests);
@@ -1633,6 +1691,8 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/admin/requests', h.adminRequests);
     app.delete('/api/admin/requests/:id', h.adminDeleteRequest);
     app.get('/api/admin/audit', h.adminAudit);
+    app.get('/api/afisha', h.afishaList);
+    app.get('/api/afisha/:id', h.afishaGet);
     app.get('/api/weather', h.weatherGet);
     app.get('/api/geocode', h.geocodeGet);
     app.use('/api', h.supportGuard);
