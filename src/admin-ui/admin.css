@@ -121,6 +121,7 @@ input[type=datetime-local] { color-scheme:dark; }
 .af-check { display:flex; align-items:center; gap:8px; }
 .af-prev { display:flex; align-items:center; gap:12px; margin-top:8px; }
 .af-prev img { width:142px; height:100px; object-fit:cover; border-radius:16px; border:1px solid var(--line); }
+.hero-prev { width:160px; height:132px; object-fit:cover; object-position:right top; border-radius:16px; border:1px solid var(--line); }
 .af-thumb { width:84px; height:59px; object-fit:cover; border-radius:14px; flex:none; border:1px solid var(--line); }
 .af-h { margin:24px 2px 10px; font-size:16px; font-weight:800; }
 input[type=file] { color:var(--mut); font-size:13px; max-width:100%; }

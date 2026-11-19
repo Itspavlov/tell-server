@@ -112,7 +112,7 @@
         ['Главное', [['overview', 'Обзор']]],
         ['Люди', [['verify', 'Верификация'], ['users', 'Пользователи'], ['reports', 'Жалобы']]],
         ['Контент', [['listings', 'Объявления'], ['requests', 'Ищу / Предлагаю'], ['services', 'Готовые услуги'], ['dviz', 'Сейчас ищут'], ['reviews', 'Отзывы'], ['chats', 'Чаты']]],
-        ['Сайт', [['afisha', 'Афиша на главной'], ['weather', 'Погода']]],
+        ['Сайт', [['hero', 'Шапка сайта'], ['afisha', 'Афиша на главной'], ['weather', 'Погода']]],
         ['Система', [['audit', 'Журнал']]]
     ];
     const BADGE = { verify: 'verify', reports: 'reports' };
@@ -133,7 +133,7 @@
             el('aside', { class: 'side' }, el('div', { class: 'brand' }, el('span', { class: 'logo' }, 'YG'), el('b', {}, 'Модерация')), nav,
                 el('button', { class: 'btn ghost wide', onclick: () => logout() }, 'Выйти')),
             el('main', { class: 'main' }, el('h2', { class: 'page-title' }, title), body)));
-        const views = { overview: vOverview, verify: vVerify, users: vUsers, chats: vChats, listings: vListings, requests: vRequests, dviz: vDviz, reports: vReports, reviews: vReviews, services: vServices, afisha: vAfisha, weather: vWeather, audit: vAudit };
+        const views = { overview: vOverview, verify: vVerify, users: vUsers, chats: vChats, listings: vListings, requests: vRequests, dviz: vDviz, reports: vReports, reviews: vReviews, services: vServices, hero: vHero, afisha: vAfisha, weather: vWeather, audit: vAudit };
         run(body, views[tab]);
         refreshCounts();
         const on = nav.querySelector('.nav-item.on'); if (on && on.scrollIntoView) on.scrollIntoView({ inline: 'center', block: 'nearest' });
@@ -500,7 +500,59 @@
     }
 
     // ---------- Журнал ----------
-    const ACTION = { afisha_add: 'Афиша: добавлено', afisha_edit: 'Афиша: изменено', afisha_delete: 'Афиша: убрано', impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалена карточка «Сейчас ищут»', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
+
+    // ---------- Шапка сайта (верх главной) ----------
+    const HERO_DEF = { title1: 'Твой', title2: 'курорт', tag: 'Общайся, размещай карточки, находи жильё, работу, друзей и развлечения', place: 'Архипо-Осиповка' };
+    // фото шапки: кадр 960×794 (как на сайте), JPEG до ~420 КБ
+    async function makeHeroPhoto(file) {
+        const img = await loadImg(await readFile(file));
+        const W = 960, H = 794, k = Math.max(W / img.width, H / img.height), sw = W / k, sh = H / k;
+        const c = document.createElement('canvas'); c.width = W; c.height = H;
+        const g = c.getContext('2d'); g.imageSmoothingQuality = 'high';
+        g.drawImage(img, (img.width - sw) / 2, 0, sw, sh, 0, 0, W, H);       // по центру по ширине, сверху без обрезки
+        let out = '';
+        for (const q of [0.84, 0.78, 0.72, 0.66, 0.6]) { out = c.toDataURL('image/jpeg', q); if (out.length <= 560000) break; }
+        return out;
+    }
+    async function vHero(body) {
+        let d = (await api('GET', '/site')).hero;
+        let pic;                                    // undefined — не трогаем; строка — новое; '' — вернуть стандартное
+        const f = {};
+        const field = (label, node, hint) => el('label', { class: 'af-field' }, el('span', { class: 'mut' }, label), node, hint ? el('span', { class: 'mut' }, hint) : null);
+        f.title1 = el('input', { type: 'text', maxlength: '24', placeholder: HERO_DEF.title1 });
+        f.title2 = el('input', { type: 'text', maxlength: '24', placeholder: HERO_DEF.title2 });
+        f.tag = el('textarea', { rows: '3', maxlength: '160', placeholder: HERO_DEF.tag });
+        f.place = el('input', { type: 'text', maxlength: '40', placeholder: HERO_DEF.place });
+        f.file = el('input', { type: 'file', accept: 'image/*' });
+        f.prev = el('div', { class: 'af-prev' });
+        const paintPrev = () => {
+            const src = pic === undefined ? d.photo : pic;
+            f.prev.replaceChildren(...(safeImg(src)
+                ? [el('img', { class: 'hero-prev', src, alt: '' }), el('button', { class: 'btn', onclick: () => { pic = ''; paintPrev(); } }, 'Вернуть стандартное фото')]
+                : [el('span', { class: 'mut' }, 'Сейчас стандартное фото сайта')]));
+        };
+        f.file.addEventListener('change', async () => {
+            const file = f.file.files && f.file.files[0]; f.file.value = '';
+            if (!file) return;
+            try { pic = await makeHeroPhoto(file); paintPrev(); } catch (e) { toast('Не удалось обработать фото'); }
+        });
+        const fill = () => { for (const k of ['title1', 'title2', 'tag', 'place']) f[k].value = d[k] || ''; pic = undefined; paintPrev(); };
+        const saveBtn = el('button', { class: 'btn ok', onclick: () => act(async () => {
+            const hero = { title1: f.title1.value, title2: f.title2.value, tag: f.tag.value, place: f.place.value };
+            if (pic !== undefined) hero.photo = pic;
+            d = (await api('POST', '/site', { hero })).hero; fill();
+        }, 'Шапка сохранена') }, 'Сохранить');
+        const resetBtn = el('button', { class: 'btn bad', onclick: () => guarded('Вернуть шапку к стандартной (тексты и фото)?', async () => { d = (await api('POST', '/site', { hero: { reset: true } })).hero; fill(); }, 'Шапка сброшена') }, 'Сбросить на стандартную');
+        const form = el('div', { class: 'card af-form' }, el('b', {}, 'Шапка сайта — верх главной страницы'),
+            el('div', { class: 'af-row' }, field('Заголовок, строка 1', f.title1), field('Заголовок, строка 2 (цветная)', f.title2)),
+            field('Подпись под заголовком', f.tag), field('Место на плашке', f.place),
+            field('Фото шапки', el('div', {}, f.file, f.prev), 'Лучше горизонтальное, около 960×794. Главное на снимке — справа и сверху: текст лежит слева-снизу. Движущийся парашют со стандартного фото при своём фото скрывается.'),
+            el('div', { class: 'actions' }, saveBtn, resetBtn),
+            el('p', { class: 'mut' }, 'Пустое поле — остаётся стандартный текст. Изменения видны на сайте сразу у всех, кто открыт, остальным — при следующем заходе.'));
+        fill();
+        body.replaceChildren(form);
+    }
+    const ACTION = { site_hero_edit: 'Шапка: изменена', site_hero_reset: 'Шапка: сброшена', afisha_add: 'Афиша: добавлено', afisha_edit: 'Афиша: изменено', afisha_delete: 'Афиша: убрано', impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалена карточка «Сейчас ищут»', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
     async function vAudit(body) {
         const d = await api('GET', '/audit?limit=200');
         if (!d.entries.length) { body.replaceChildren(empty('Журнал пуст')); return; }

@@ -11,7 +11,7 @@ const { fail } = require('./validate');
 const { nameKey } = require('./accounts');
 const { cleanFilter, matches: matchesFilter } = require('./searches');
 
-function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, afisha = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
+function createHandlers({ cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, afisha = null, site = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push = null, pushStore = null, notifier = null, logger = console }) {
     const ipOf = (req) => req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
 
     function limited(res, r) {
@@ -1484,6 +1484,39 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({ ok: true });
     }
 
+    // ---------- «шапка» главного экрана ----------
+    const siteFail = (res, r) => res.status(r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
+    function siteGet(req, res) {
+        if (!site) return res.status(404).json({ error: 'Not found' });
+        const rl = limiters.history.hit(ipOf(req));
+        if (!rl.ok) return limited(res, rl);
+        res.set('Cache-Control', 'public, max-age=60');
+        res.json({ ok: true, hero: site.heroPublic() });
+    }
+    function siteHeroPhoto(req, res) {
+        if (!site) return res.status(404).json({ error: 'Not found' });
+        const p = site.heroPhoto();
+        if (!p) return res.status(404).json({ error: 'Not found' });
+        res.set('Cache-Control', 'public, max-age=31536000, immutable');
+        res.set('Content-Type', p.mime);
+        res.send(p.buf);
+    }
+    async function adminSiteGet(req, res) {
+        if (!site) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'view_site', {}))) return;
+        res.json({ ok: true, hero: site.heroAdmin() });
+    }
+    async function adminSiteSave(req, res) {
+        if (!site) return res.status(404).json({ error: 'Not found' });
+        if (!(await requireAdmin(req, res, 'save_site', {}))) return;
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const r = await site.saveHero(body.hero);
+        if (!r.ok) return siteFail(res, r);
+        await admin.audit(body.hero && body.hero.reset === true ? 'site_hero_reset' : 'site_hero_edit', { ip: ipOf(req) });
+        if (io && typeof io.emit === 'function') io.emit('site-changed', {});
+        res.json({ ok: true, hero: r.hero });
+    }
+
     function dvizList(req, res) {
         if (!dviz) return res.status(404).json({ error: 'Not found' });
         const rl = limiters.history.hit(ipOf(req));
@@ -1638,15 +1671,15 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.sendFile(m.path, { cacheControl: false, headers: { 'Content-Type': m.mime } }, (e) => { if (e && !res.headersSent) res.status(404).end(); });
     }
 
-    return { afishaList, afishaGet, adminAfishaList, adminAfishaGet, adminAfishaSave, adminAfishaDelete, authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingsMap, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
+    return { siteGet, siteHeroPhoto, adminSiteGet, adminSiteSave, afishaList, afishaGet, adminAfishaList, adminAfishaGet, adminAfishaSave, adminAfishaDelete, authOptions, recoveryInfo, recoveryCodeNew, emailStart, emailConfirm, emailRemove, resetStart, resetConfirm, accountDelete, passwordChange, reportCreate, tgHook, blocksList, blockSet, adminContentReports, adminContentReportClose, invitesMe, mediaUpload, mediaGet, security, generalLimit, root, healthz, readyz, history, clearRoom, exportAll, register, login, logout, rename, me, avatarsByNames, setAvatar, verifyRequest, adminVerify, adminVerifyRequests, adminOverview, adminMessages, adminDeleteMessage, adminPurgeUser, adminUsers, adminBan, adminVerifyReject, adminListings, adminDeleteListing, adminRequests, adminDeleteRequest, adminDviz, adminDvizDelete, dvizList, dvizGet, dvizCreate, dvizDelete, dvizComment, dvizCommentDelete, dvizJoin, adminImpersonate, supportGuard, adminReports, adminReportClose, adminReviews, adminReviewDelete, servicesList, serviceGet, serviceSave, serviceBump, serviceDelete, listingBump, adminServices, adminServiceDelete, userProfile, myStats, searchesList, searchAdd, searchRemove, reviewsList, reviewSave, reviewDelete, reviewReply, adminAudit, geocodeGet, weatherGet, adminWeatherGet, adminWeatherSet, adminWeatherRefresh, panel, pushKey, pushSubscribe, pushUnsubscribe, listingsList, listingsMap, listingGet, listingSave, listingDelete, listingQuota, requestsList, requestCreate, requestEdit, requestStatus, requestDelete, requestNotify, favList, favSet, inboxList, inboxRead, inboxPrefs, requestMatches, requestsMatching, requestOffer, requestOffers, requestOfferReject, notFound, onError };
 }
 
-function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, afisha = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push, pushStore, notifier, logger }) {
+function createApp({ express, cors, cfg, store, admin, accounts, listings, requests = null, inbox = null, favorites = null, reviews = null, services = null, dviz = null, afisha = null, site = null, stats = null, searches = null, media = null, dms = null, weather = null, invites = null, groups = null, adReacts = null, reports = null, mailer = null, geocoder = null, telegram = null, limiters, io, push, pushStore, notifier, logger }) {
     const app = express();
     if (cfg.trustProxy) app.set('trust proxy', 1);
     app.disable('x-powered-by');
 
-    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, afisha, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
+    const h = createHandlers({ cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, afisha, site, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
     app.use(cors({
         origin: (origin, cb) => cb(null, !origin || isOriginAllowed(origin, cfg)),
         methods: ['GET', 'POST', 'DELETE'],
@@ -1666,7 +1699,9 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/admin/admin.css', h.panel('css'));
     // афиша: в теле картинка, поэтому лимит больше общего; маршрут стоит раньше общего разбора тела
     app.post('/api/admin/afisha', express.json({ limit: '800kb' }), h.adminAfishaSave);
+    app.post('/api/admin/site', express.json({ limit: '800kb' }), h.adminSiteSave);
     app.use('/api/admin', express.json({ limit: '2kb' }));
+    app.get('/api/admin/site', h.adminSiteGet);
     app.get('/api/admin/afisha', h.adminAfishaList);
     app.get('/api/admin/afisha/:id', h.adminAfishaGet);
     app.delete('/api/admin/afisha/:id', h.adminAfishaDelete);
@@ -1691,6 +1726,8 @@ function createApp({ express, cors, cfg, store, admin, accounts, listings, reque
     app.get('/api/admin/requests', h.adminRequests);
     app.delete('/api/admin/requests/:id', h.adminDeleteRequest);
     app.get('/api/admin/audit', h.adminAudit);
+    app.get('/api/site', h.siteGet);
+    app.get('/api/site/hero', h.siteHeroPhoto);
     app.get('/api/afisha', h.afishaList);
     app.get('/api/afisha/:id', h.afishaGet);
     app.get('/api/weather', h.weatherGet);
