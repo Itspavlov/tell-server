@@ -111,8 +111,8 @@
     const NAV = [
         ['Главное', [['overview', 'Обзор']]],
         ['Люди', [['verify', 'Верификация'], ['users', 'Пользователи'], ['reports', 'Жалобы']]],
-        ['Контент', [['listings', 'Объявления'], ['requests', 'Ищу / Предлагаю'], ['services', 'Развлечения'], ['dviz', 'Курортный движ'], ['reviews', 'Отзывы'], ['chats', 'Чаты']]],
-        ['Сайт', [['afisha', 'Афиша'], ['weather', 'Погода']]],
+        ['Контент', [['listings', 'Объявления'], ['requests', 'Ищу / Предлагаю'], ['services', 'Готовые услуги'], ['dviz', 'Сейчас ищут'], ['reviews', 'Отзывы'], ['chats', 'Чаты']]],
+        ['Сайт', [['afisha', 'Афиша на главной'], ['weather', 'Погода']]],
         ['Система', [['audit', 'Журнал']]]
     ];
     const BADGE = { verify: 'verify', reports: 'reports' };
@@ -210,7 +210,7 @@
                     el('button', { class: 'btn acc', onclick: () => asUser(u.name) }, 'Войти как'),
                     el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !u.verified }); await load(); }, u.verified ? 'Статус снят' : 'Подтверждён') }, u.verified ? 'Снять проверку жилья' : 'Проверить жильё'),
                     el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !(u.verifs && u.verifs.trips), kind: 'trips' }); await load(); }, 'Готово') }, u.verifs && u.verifs.trips ? 'Снять проверку водителя' : 'Проверить водителя'),
-                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !(u.verifs && u.verifs.services), kind: 'services' }); await load(); }, 'Готово') }, u.verifs && u.verifs.services ? 'Снять проверку развлечений' : 'Проверить развлечения'),
+                    el('button', { class: 'btn', onclick: () => act(async () => { await api('POST', '/verify', { name: u.name, verified: !(u.verifs && u.verifs.services), kind: 'services' }); await load(); }, 'Готово') }, u.verifs && u.verifs.services ? 'Снять проверку услуг' : 'Проверить услуги'),
                     el('button', { class: 'btn ' + (u.banned ? '' : 'bad'), onclick: async () => { if (u.banned || await sure('Заблокировать ' + u.name + '? Он будет разлогинен и не сможет войти.', 'Заблокировать')) act(async () => { await api('POST', '/ban', { name: u.name, banned: !u.banned }); await load(); }, u.banned ? 'Разблокирован' : 'Заблокирован'); } }, u.banned ? 'Разблокировать' : 'Заблокировать'),
                     el('button', { class: 'btn', onclick: () => guarded('Удалить ВСЕ сообщения «' + u.name + '» во всех общих чатах?', async () => { const r = await api('POST', '/purge-user', { name: u.name }); toast('Удалено сообщений: ' + r.removed); }, '', false, 'Стереть') }, 'Стереть сообщения')))) : [empty('Никого не нашлось')]));
         };
@@ -271,7 +271,7 @@
     }
 
     // ---------- Запросы «Ищу / Предлагаю» ----------
-    const SECTIONS = { housing: 'Жильё', work: 'Работа', trips: 'Попутчики', services: 'Развлечения' };
+    const SECTIONS = { housing: 'Жильё', work: 'Работа', trips: 'Поездки', services: 'Развлечения и друзья' };
     const CATS = { apartment: 'Квартира', house: 'Дом', hotel: 'Отель', room: 'Комната', guest: 'Гостевой дом' };
     const money = (n) => n ? Number(n).toLocaleString('ru-RU') + ' ₽' : '';
     async function vRequests(body) {
@@ -306,9 +306,9 @@
         draw();
     }
 
-    // ---------- Жалобы: на материалы (объявления, услуги, движ, запросы, сообщения, профили) и на личные сообщения ----------
+    // ---------- Жалобы: на материалы (объявления, готовые услуги, «Сейчас ищут», запросы, сообщения, профили) и на личные сообщения ----------
     const REASONS = { spam: 'Спам', scam: 'Мошенничество', abuse: 'Оскорбления', adult: 'Неприемлемое', other: 'Другое' };
-    const KIND_RU = { listing: 'Объявление', request: 'Запрос «Ищу»', dviz: 'Движ', service: 'Услуга', review: 'Отзыв', message: 'Сообщение в комнате', user: 'Профиль' };
+    const KIND_RU = { listing: 'Объявление', request: 'Запрос «Ищу»', dviz: 'Сейчас ищут', service: 'Готовая услуга', review: 'Отзыв', message: 'Сообщение в комнате', user: 'Профиль' };
     async function vReports(body) {
         const [d, c] = await Promise.all([api('GET', '/reports'), api('GET', '/content-reports')]);
         counts.reports = d.reports.length + c.reports.length; renderBadges();
@@ -347,23 +347,23 @@
                 el('button', { class: 'btn bad', onclick: () => guarded('Удалить отзыв?', () => api('DELETE', '/reviews/' + encodeURIComponent(r.id)), 'Отзыв удалён', true, 'Удалить') }, 'Удалить')))));
     }
 
-    // ---------- Развлечения ----------
+    // ---------- Готовые услуги ----------
     async function vServices(body) {
         const d = await api('GET', '/services');
-        if (!d.services.length) { body.replaceChildren(empty('Карточек развлечений пока нет')); return; }
+        if (!d.services.length) { body.replaceChildren(empty('Готовых услуг пока нет')); return; }
         body.replaceChildren(...d.services.map(x => el('div', { class: 'card item' }, initial(x.ownerName),
             el('div', { class: 'grow' },
                 el('div', { class: 'head' }, el('b', {}, x.title), el('span', { class: 'pill' }, x.price ? x.price + ' ₽' : 'без цены')),
                 el('div', { class: 'mut' }, x.ownerName + ' · ' + (x.city || '') + ' · фото: ' + x.photos + ' · ' + fmt(x.created))),
             el('div', { class: 'actions' },
                 el('button', { class: 'btn acc', onclick: () => asUser(x.ownerName) }, 'Войти как'),
-                el('button', { class: 'btn bad', onclick: () => guarded('Удалить карточку развлечения?', () => api('DELETE', '/services/' + encodeURIComponent(x.id)), 'Карточка удалена', true, 'Удалить') }, 'Удалить')))));
+                el('button', { class: 'btn bad', onclick: () => guarded('Удалить готовую услугу?', () => api('DELETE', '/services/' + encodeURIComponent(x.id)), 'Карточка удалена', true, 'Удалить') }, 'Удалить')))));
     }
 
-    // ---------- Курортный движ ----------
+    // ---------- Сейчас ищут ----------
     async function vDviz(body) {
         const d = await api('GET', '/dviz');
-        if (!d.events.length) { body.replaceChildren(empty('Движей пока нет')); return; }
+        if (!d.events.length) { body.replaceChildren(empty('Карточек «Сейчас ищут» пока нет')); return; }
         body.replaceChildren(...d.events.map(x => el('div', { class: 'card item' }, initial(x.ownerName),
             el('div', { class: 'grow' },
                 el('div', { class: 'head' }, el('b', {}, x.title), x.active ? el('span', { class: 'pill ok' }, 'идёт') : el('span', { class: 'pill' }, 'закончился')),
@@ -371,7 +371,7 @@
                 el('div', { class: 'mut' }, 'Откликов: ' + x.joins + ' · комментариев: ' + x.comments + ' · фото: ' + x.photos + ' · ' + fmt(x.created))),
             el('div', { class: 'actions' },
                 el('button', { class: 'btn acc', onclick: () => asUser(x.ownerName) }, 'Войти как'),
-                el('button', { class: 'btn bad', onclick: () => guarded('Удалить движ «' + x.title + '» автора ' + x.ownerName + '?', () => api('DELETE', '/dviz/' + encodeURIComponent(x.id)), 'Движ удалён', true, 'Удалить') }, 'Удалить')))));
+                el('button', { class: 'btn bad', onclick: () => guarded('Удалить карточку «' + x.title + '» автора ' + x.ownerName + '?', () => api('DELETE', '/dviz/' + encodeURIComponent(x.id)), 'Карточка удалена', true, 'Удалить') }, 'Удалить')))));
     }
 
     // ---------- Афиша: главная, «Чем заняться сегодня?» ----------
@@ -390,7 +390,7 @@
             if (image.length <= 440000) break;
         }
         let thumb = '';
-        for (const [w, h, q] of [[440, 630, 0.74], [400, 570, 0.68], [360, 515, 0.62], [300, 430, 0.58]]) {
+        for (const [w, h, q] of [[560, 396, 0.78], [500, 354, 0.72], [440, 311, 0.66], [380, 269, 0.6]]) {   // горизонтально, как карточки в ленте на главной (178×126)
             const k = Math.max(w / img.width, h / img.height), sw = w / k, sh = h / k;
             thumb = draw(w, h, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, q);
             if (thumb.length <= 106000) break;
@@ -447,7 +447,7 @@
         const form = el('div', { class: 'card af-form' }, head,
             el('div', { class: 'af-row' }, field('Вид', f.kind), whenBox), field('Заголовок', f.title), field('Текст', f.text), field('Место', f.place),
             el('div', { class: 'af-row' }, field('Широта (необязательно)', f.lat), field('Долгота (необязательно)', f.lng)),
-            field('Ссылка', f.link), field('Фото', el('div', {}, f.file, f.prev)),
+            field('Ссылка', f.link), field('Фото (лучше горизонтальное)', el('div', {}, f.file, f.prev)),
             el('label', { class: 'af-check' }, f.pinned, el('span', {}, ' Закрепить сверху (всегда первым на главной)')),
             el('div', { class: 'actions' }, saveBtn, cancelBtn),
             el('p', { class: 'mut' }, 'Запись сразу появится на главной в «Чем заняться сегодня?». Событие с датой пропадёт само через 6 часов после начала, история и место остаются, пока вы их не уберёте. Координаты можно взять в Яндекс Картах: клик правой кнопкой по точке.'));
@@ -500,7 +500,7 @@
     }
 
     // ---------- Журнал ----------
-    const ACTION = { afisha_add: 'Афиша: добавлено', afisha_edit: 'Афиша: изменено', afisha_delete: 'Афиша: убрано', impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалён движ', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
+    const ACTION = { afisha_add: 'Афиша: добавлено', afisha_edit: 'Афиша: изменено', afisha_delete: 'Афиша: убрано', impersonate: 'Вход как пользователь', delete_request: 'Удалён запрос «Ищу»', delete_dviz: 'Удалена карточка «Сейчас ищут»', delete_listing: 'Удалено объявление', ban: 'Блокировка', verify: 'Проверка хозяина', set_weather: 'Погода' };
     async function vAudit(body) {
         const d = await api('GET', '/audit?limit=200');
         if (!d.entries.length) { body.replaceChildren(empty('Журнал пуст')); return; }
