@@ -1112,12 +1112,24 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         } catch (e) { logger.warn?.(`holdForReview: ${e && e.message}`); return false; }
     }
 
+    // «Прогулка» объявления: лента кадров должна быть загружена этим же автором (id из /api/media?kind=walk).
+    // Файла уже нет — публикуем без прогулки; чужой файл или не лента — отказ.
+    function walkOk(user, body) {
+        const ad = body && typeof body === 'object' && body.ad && typeof body.ad === 'object' ? body.ad : null;
+        if (!ad || ad.walk === undefined || ad.walk === null) return true;
+        const id = typeof ad.walk === 'object' ? ad.walk.id : null;
+        const it = media && typeof id === 'string' ? media.info(id) : null;
+        if (!it) { delete ad.walk; return true; }
+        return it.owner === user.id && it.kind === 'walk';
+    }
+
     async function listingSave(req, res) {
         if (!listings) return res.status(404).json({ error: 'Not found' });
         const user = accounts && accounts.authenticate(bearer(req));
         if (!user) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' });
         const rl = limiters.listingSave.hit(user.id);
         if (!rl.ok) return limited(res, rl);
+        if (!walkOk(user, req.body)) return res.status(400).json(fail('IMAGE_INVALID'));
         const isNewAd = !(req.body && typeof req.body.id === 'string' && req.body.id);
         {   // явный мусор («продам машину» в «Жилье», мат, спам, нереальная цена) не публикуем
             const b = req.body && req.body.ad && typeof req.body.ad === 'object' ? req.body.ad : {};   // объявление лежит в body.ad
@@ -1655,7 +1667,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!media) return res.status(503).json({ ok: false, code: 'SERVER_ERROR' });
         const rl = limiters.mediaUpload.hit(u.id);
         if (!rl.ok) return limited(res, rl);
-        const mediaKind = req.query && req.query.kind === 'voice' ? 'voice' : (req.query && req.query.kind === 'photo' ? 'photo' : 'video');
+        const mediaKind = req.query && req.query.kind === 'voice' ? 'voice' : (req.query && req.query.kind === 'photo' ? 'photo' : (req.query && req.query.kind === 'walk' ? 'walk' : 'video'));
         const r = await media.save(u.id, Buffer.isBuffer(req.body) ? req.body : null, req.query && req.query.dur, mediaKind);
         if (!r.ok) return res.status(r.code === 'TOO_LARGE' ? 413 : (r.code === 'STORE_UNAVAILABLE' ? 503 : 400)).json({ ok: false, code: r.code });
         res.json({ ok: true, id: r.id, dur: r.dur, url: '/api/media/' + r.id });

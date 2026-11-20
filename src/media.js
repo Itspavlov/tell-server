@@ -12,6 +12,7 @@ const { JsonFile } = require('./jsonfile');
 const MAX_BYTES = 6_000_000;      // видео: ~60 секунд при 600 кбит/с
 const MAX_VOICE_BYTES = 2_500_000; // голос: до 2 минут
 const MAX_PHOTO_BYTES = 2_000_000; // фото: клиент заранее сжимает до ~1280 px
+const MAX_WALK_BYTES = 2_400_000;  // «прогулка»: одна лента кадров из видео объявления (JPEG)
 const MAX_SEC = { video: 60, voice: 120 };
 const MIN_BYTES = 1_000;
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
@@ -40,6 +41,7 @@ class MediaStore {
         this.now = now;
         this.logger = logger;
         this.items = {};
+        this.pinned = null;   // (id) => true, если файл нужен объявлению
     }
 
     async init() {
@@ -51,16 +53,17 @@ class MediaStore {
 
     // kind: 'video' (кружок) или 'voice' (голосовое)
     async save(ownerId, buf, dur, mediaKind = 'video') {
-        if (mediaKind !== 'video' && mediaKind !== 'voice' && mediaKind !== 'photo') return { ok: false, code: 'BAD_PAYLOAD' };
+        if (mediaKind !== 'video' && mediaKind !== 'voice' && mediaKind !== 'photo' && mediaKind !== 'walk') return { ok: false, code: 'BAD_PAYLOAD' };
         if (!Buffer.isBuffer(buf) || buf.length < MIN_BYTES) return { ok: false, code: 'BAD_PAYLOAD' };
-        if (buf.length > (mediaKind === 'voice' ? MAX_VOICE_BYTES : mediaKind === 'photo' ? MAX_PHOTO_BYTES : MAX_BYTES)) return { ok: false, code: 'TOO_LARGE' };
-        const kind = mediaKind === 'photo' ? sniffImage(buf) : sniff(buf);
+        if (buf.length > (mediaKind === 'voice' ? MAX_VOICE_BYTES : mediaKind === 'photo' ? MAX_PHOTO_BYTES : mediaKind === 'walk' ? MAX_WALK_BYTES : MAX_BYTES)) return { ok: false, code: 'TOO_LARGE' };
+        const kind = mediaKind === 'photo' || mediaKind === 'walk' ? sniffImage(buf) : sniff(buf);
         if (!kind) return { ok: false, code: 'BAD_FORMAT' };
+        if (mediaKind === 'walk' && kind.ext !== 'jpg') return { ok: false, code: 'BAD_FORMAT' };
         if (mediaKind === 'video' && kind.ext === 'ogg') return { ok: false, code: 'BAD_FORMAT' };
         // голос отдаётся как audio/*, видео — как video/*
         if (mediaKind === 'voice') kind.mime = 'audio/' + kind.ext;
         const id = 'vm_' + crypto.randomBytes(16).toString('hex');
-        const d = mediaKind === 'photo' ? 0 : Math.max(1, Math.min(MAX_SEC[mediaKind], Math.round(Number(dur) || 0))) || 1;
+        const d = mediaKind === 'photo' || mediaKind === 'walk' ? 0 : Math.max(1, Math.min(MAX_SEC[mediaKind], Math.round(Number(dur) || 0))) || 1;
         await this.fs.writeFile(path.join(this.dir, id + '.' + kind.ext), buf, { mode: 0o640 });
         this.items[id] = { owner: ownerId, kind: mediaKind, ext: kind.ext, mime: kind.mime, size: buf.length, dur: d, time: this.now() };
         try { await this.file.save({ items: this.items }); }
@@ -97,6 +100,8 @@ class MediaStore {
         let n = 0;
         for (const [id, it] of Object.entries(this.items)) {
             if (it.time >= cut) continue;
+            // лента кадров живёт, пока на неё ссылается объявление; пока связь с объявлениями не задана, не трогаем
+            if (it.kind === 'walk' && (!this.pinned || this.pinned(id))) continue;
             await this.fs.unlink(path.join(this.dir, id + '.' + it.ext)).catch(() => {});
             delete this.items[id]; n++;
         }

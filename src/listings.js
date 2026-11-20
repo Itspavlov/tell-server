@@ -24,6 +24,7 @@ const MAX_PHOTOS = 6;
 const PHOTO_BYTES = 350_000;
 const THUMB_BYTES = 80_000;
 const AVATAR_BYTES = 120_000;
+const WALK_ID_RE = /^vm_[0-9a-f]{32}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ICON_RE = /^fa-[a-z0-9-]{1,30}$/;
 // удобства приходят подписями на русском («С животными», «Wi-Fi»): буквы, цифры, пробел, дефис
@@ -43,6 +44,14 @@ function cleanImage(v, max) {
     if (typeof v !== 'string' || !v) return null;
     const r = validateImage(v, max);
     return r.ok ? r.value : null;
+}
+
+// «Прогулка»: лента кадров из видео (один файл на сервере) + её разбивка. Битое описание просто отбрасываем.
+function cleanWalk(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v) || typeof v.id !== 'string' || !WALK_ID_RE.test(v.id)) return null;
+    const n = num(v.n, 8, 40), cols = num(v.cols, 1, 10), w = num(v.w, 80, 1000), h = num(v.h, 80, 1000);
+    if (n === null || cols === null || w === null || h === null) return null;
+    return { id: v.id, n: Math.round(n), cols: Math.round(cols), w: Math.round(w), h: Math.round(h) };
 }
 
 // Возвращает { ok, value } или { ok:false }
@@ -91,6 +100,7 @@ function cleanListing(raw, rawProfile) {
                 location: text(raw.location, 120),
                 description: text(raw.description, 2000),
                 photos, thumb, facts, terms, amenities, rules, busy, form,
+                ...(cleanWalk(raw.walk) ? { walk: cleanWalk(raw.walk) } : {}),
                 coords: cleanCoords(raw.coords), beach: cleanCoords(raw.beach),
                 since: num(raw.since, 1990, 2100) || new Date().getFullYear()
             },
@@ -138,6 +148,7 @@ class ListingStore {
             image: cover || (full && a.photos[0]) || '',
             photos: full ? a.photos : (cover ? [cover] : []),
             thumb: cover, partial: !full, photoCount: a.photos.length,
+            walk: a.walk || null,
             views: 0, isVerified: !!(u && u.verified), isUrgent: false,
             facts: a.facts, amenities: a.amenities, terms: a.terms, rules: a.rules,
             coords: a.coords, beach: a.beach, busy: a.busy, form: full ? a.form : undefined,
@@ -283,6 +294,9 @@ class ListingStore {
         return { ok: true, listing: this._compose(l, false) };
     }
 
+    // Нужен ли файл ленты кадров какому-нибудь объявлению (иначе его можно удалять)
+    usesWalk(id) { return Object.values(this.data.listings).some(l => l.ad && l.ad.walk && l.ad.walk.id === id); }
+
     // Для подбора: объявления в «сыром» виде и лёгкая карточка для показа
     raws() { return Object.values(this.data.listings); }
     rawById(id) { return typeof id === 'string' ? this.data.listings[id] || null : null; }
@@ -333,4 +347,4 @@ ListingStore.prototype.eraseUser = async function (userId) {
     return gone.map(l => l.id);
 };
 
-module.exports = { ListingStore, cleanListing, dayKey };
+module.exports = { ListingStore, cleanListing, cleanWalk, dayKey };

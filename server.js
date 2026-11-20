@@ -61,6 +61,7 @@ async function start(env = process.env, logger = console) {
     // дневной лимит публикаций считает InviteStore (по разделам, с бонусом за друзей); внутренний счётчик объявлений — только страховка
     const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: { ...cfg.limits, dailyListings: 100 }, logger });
     await listings.init();
+    media.pinned = (id) => listings.usesWalk(id);   // лента кадров из видео живёт, пока есть объявление
     const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger, dayOf: (ts) => dayKey(ts, cfg.limits.serviceTz) });
     groups.requests = requests;
     await requests.init();
