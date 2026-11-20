@@ -21,8 +21,11 @@ class FavoriteStore {
 
     ids(userId) { return (this.data.users[userId] || []).slice(); }
 
-    async set(userId, listingId, on, listings) {
-        if (typeof listingId !== 'string' || !listings.rawById(listingId)) return fail('LISTING_NOT_FOUND');
+    // id объявления (l_…) или готовой услуги (s_…)
+    async set(userId, listingId, on, listings, services = null) {
+        const isSvc = typeof listingId === 'string' && listingId.startsWith('s_');
+        if (typeof listingId !== 'string') return fail('LISTING_NOT_FOUND');
+        if (isSvc ? !(services && services.light(listingId)) : !listings.rawById(listingId)) return fail(isSvc ? 'SERVICE_NOT_FOUND' : 'LISTING_NOT_FOUND');
         const list = this.data.users[userId] || [];
         const had = list.includes(listingId);
         if (on && had) return { ok: true, ids: this.ids(userId) };
@@ -41,7 +44,12 @@ class FavoriteStore {
 
     // Карточки избранного; удалённые объявления отбрасываются
     list(userId, listings) {
-        return this.ids(userId).map(id => listings.rawById(id)).filter(Boolean).map(l => listings.light(l));
+        return this.ids(userId).filter(id => !id.startsWith('s_')).map(id => listings.rawById(id)).filter(Boolean).map(l => listings.light(l));
+    }
+
+    // Избранные готовые услуги (в том же порядке, удалённые отбрасываются)
+    listServices(userId, services, viewerId = null) {
+        return this.ids(userId).filter(id => id.startsWith('s_')).map(id => services.light(id, viewerId)).filter(Boolean);
     }
 }
 

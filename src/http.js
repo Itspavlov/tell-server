@@ -996,7 +996,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.history.hit(user.id);
         if (!rl.ok) return limited(res, rl);
-        res.json({ ok: true, ids: favorites.ids(user.id), listings: favorites.list(user.id, listings) });
+        res.json({ ok: true, ids: favorites.ids(user.id), listings: favorites.list(user.id, listings), services: services ? withOwnerRating(favorites.listServices(user.id, services, user.id)) : [] });
     }
 
     async function favSet(req, res) {
@@ -1005,8 +1005,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
         const b = req.body && typeof req.body === 'object' ? req.body : {};
-        const r = await favorites.set(user.id, b.id, b.on === true, listings);
-        if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
+        const r = await favorites.set(user.id, b.id, b.on === true, listings, services);
+        if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' || r.code === 'SERVICE_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
         res.json({ ok: true, ids: r.ids });
     }
 
@@ -1311,7 +1311,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         res.json({
             ok: true, isMe: !!(viewer && viewer.id === u.id),
             user: { id: u.id, name: u.name, verified: !!u.verified, since: full && full.createdAt ? new Date(full.createdAt).getFullYear() : null, avatar: raws[0] ? raws[0].owner.avatar : '', about: raws[0] ? raws[0].owner.about : '' },
-            listings: raws.map(l => listings.light(l)), services: services ? services.list({ ownerId: u.id, viewerId: viewer ? viewer.id : null }) : [], rating: rv.rating, count: rv.count, reviews: rv.items
+            listings: raws.map(l => listings.light(l)), services: services ? withOwnerRating(services.list({ ownerId: u.id, viewerId: viewer ? viewer.id : null })) : [], rating: rv.rating, count: rv.count, reviews: rv.items
         });
     }
 
@@ -1375,6 +1375,16 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         r.code === 'BUMP_WAIT' ? 429 : 400
     ).json({ ok: false, code: r.code, message: r.message, ...(r.wait ? { wait: r.wait } : {}) });
 
+    // Рейтинг в профиле у человека один на все его объявления и карточки: показываем его и на карточках услуг
+    function withOwnerRating(list) {
+        if (!reviews) return list;
+        const memo = {};
+        return list.map(s => {
+            const st = memo[s.ownerId] || (memo[s.ownerId] = reviews.ownerStats(s.ownerId));
+            return st && st.count ? { ...s, rating: st.rating, reviews: st.count } : s;
+        });
+    }
+
     function servicesList(req, res) {
         if (!services) return res.status(404).json({ error: 'Not found' });
         const rl = limiters.history.hit(ipOf(req));
@@ -1384,7 +1394,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         let ownerId = typeof q.owner === 'string' ? q.owner.slice(0, 40) : '';
         if (mine) { const u = accounts && accounts.authenticate(bearer(req)); if (!u) return res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Нужно войти в аккаунт' }); ownerId = u.id; }
         const sl = services.list({ ownerId, viewerId: viewerOf(req) });
-        res.json({ ok: true, services: mine ? sl : hideFor('service', sl, reports && reports.hiddenIds('service').size ? viewerOf(req) : null) });
+        res.json({ ok: true, services: withOwnerRating(mine ? sl : hideFor('service', sl, reports && reports.hiddenIds('service').size ? viewerOf(req) : null)) });
     }
 
     function serviceGet(req, res) {
@@ -1393,7 +1403,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         if (!rl.ok) return limited(res, rl);
         const s = services.get(req.params.id, viewerOf(req));
         if (!s || hiddenFrom('service', s, reports && reports.isHidden('service', s.id) ? viewerOf(req) : null)) return serviceFail(res, { code: 'SERVICE_NOT_FOUND', message: 'Карточка не найдена' });
-        res.json({ ok: true, service: s });
+        res.json({ ok: true, service: withOwnerRating([s])[0] });
     }
 
     async function serviceSave(req, res) {

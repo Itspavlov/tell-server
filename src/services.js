@@ -111,6 +111,7 @@ class ServiceStore {
         return Object.values(this.data.items).filter(s => !ownerId || s.ownerId === ownerId)
             .sort((a, b) => b.updated - a.updated).slice(0, limit).map(s => this._view(s, false, viewerId));
     }
+    light(id, viewerId = null) { const s = typeof id === 'string' ? this.data.items[id] : null; return s ? this._view(s, false, viewerId) : null; }
     get(id, viewerId = null) { const s = typeof id === 'string' ? this.data.items[id] : null; return s ? this._view(s, true, viewerId) : null; }
     count(ownerId) { return Object.values(this.data.items).filter(s => s.ownerId === ownerId).length; }
 
