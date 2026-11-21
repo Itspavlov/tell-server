@@ -118,7 +118,7 @@ test('фильтр: слова с окончаниями («Автомобиль
     assert.equal(checkContent('trips', { title: 'Еду на автомобиле в Краснодар', text: '' }).ok, true);
 });
 
-test('проверка перед показом: первая карточка нового автора скрыта до одобрения в Telegram, потом автор доверенный', async () => {
+test('проверка перед показом: первая карточка нового автора скрыта до одобрения в Telegram, потом публикуется, а следующая карточка снова ждёт проверки', async () => {
     const { ListingStore } = require('../src/listings');
     const cfg = makeCfg();
     const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
@@ -148,15 +148,15 @@ test('проверка перед показом: первая карточка 
     r = res(); await h.tgHook(req({ params: { secret: 's' }, body: { callback_query: { id: 'q', from: { id: 777 }, data: 'hok:l:' + id, message: { chat: { id: 777 }, message_id: 1, text: 'x' } } } }), r);
     r = res(); await h.listingsList(req({ query: {} }), r);
     assert.equal(r.body.listings.some(l => l.id === id), true);
-    assert.equal(reports.isTrusted(uid), true);
-    assert.ok(notes.some(n => n.ids[0] === uid && /одобрена/.test(n.p.title)));
-    // вторая карточка того же автора — без проверки
+    assert.equal(reports.isTrusted(uid), false, 'одобрение не делает автора доверенным');
+    assert.ok(notes.some(n => n.ids[0] === uid && /одобрена/.test(n.p.title) && /верификацию проверенного пользователя/.test(n.p.body)));
+    // вторая карточка того же непроверенного автора тоже идёт через модерацию
     r = res(); await h.listingSave(req({ ip: '8.8.8.2', headers: hdr, body: mk('Второй дом') }), r);
-    assert.equal(r.code, 200); assert.equal(r.body.held, undefined);
+    assert.equal(r.code, 200); assert.equal(r.body.held, true);
     await store.close();
 });
 
-test('проверка перед показом: первая карточка в «Работе» тоже ждёт одобрения, запрос на жильё идёт сразу', async () => {
+test('проверка перед показом: «Нужен официант» ждёт одобрения, а «ищу» (работу, жильё, поездку) идёт сразу', async () => {
     const { RequestStore } = require('../src/requests');
     const cfg = makeCfg();
     const accounts = new AccountStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent }); await accounts.init();
@@ -179,5 +179,18 @@ test('проверка перед показом: первая карточка 
     assert.equal((r.body.requests || []).some(x => x.id === id), false);
     r = res(); await h.tgHook(req({ params: { secret: 's' }, body: { callback_query: { id: 'q', from: { id: 777 }, data: 'hno:r:' + id, message: { chat: { id: 777 }, message_id: 1, text: 'x' } } } }), r);
     assert.equal(requests.data.requests[id], undefined, 'отклонённая удалена');
+    // «ищу» не проверяется: ни работа, ни поездка, ни жильё
+    const mkSeek = async (name, ip, body) => {
+        let q = res(); await h.register(req({ ip, body: { name, password: 'correct horse 9' } }), q);
+        const hd = { authorization: 'Bearer ' + q.body.token };
+        q = res(); await h.requestCreate(req({ ip, headers: hd, body }), q); return q;
+    };
+    let q = await mkSeek('Ищущий1', '8.8.8.4', { section: 'work', kind: 'seek', title: 'Ищу работу', city: 'Архипо-Осиповка', text: 'Повар, опыт 5 лет' });
+    assert.equal(q.code, 200, JSON.stringify(q.body)); assert.equal(q.body.held, undefined);
+    q = await mkSeek('Ищущий2', '8.8.8.5', { section: 'trips', kind: 'seek', title: 'Ищу трансфер', city: 'Краснодар', text: 'Нужен трансфер в аэропорт' });
+    assert.equal(q.code, 200, JSON.stringify(q.body)); assert.equal(q.body.held, undefined);
+    // а предложение поездки от непроверенного водителя ждёт
+    q = await mkSeek('Водитель1', '8.8.8.6', { section: 'trips', kind: 'offer', title: 'Трансфер Краснодар', city: 'Краснодар', text: 'Еду каждый день, 4 места' });
+    assert.equal(q.code, 200, JSON.stringify(q.body)); assert.equal(q.body.held, true);
     await store.close();
 });

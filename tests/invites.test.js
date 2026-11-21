@@ -14,7 +14,7 @@ const PW = 'correct horse 9';
 const DAY = 86400000;
 let ipN = 0;
 
-async function setup() {
+async function setup(gapSec = 0) {
     const cfg = makeCfg();
     const clock = { t: Date.parse('2027-03-10T12:00:00Z') };
     const now = () => clock.t;
@@ -23,7 +23,7 @@ async function setup() {
     const listings = new ListingStore({ dataDir: cfg.dataDir, accounts, limits: { ...cfg.limits, dailyListings: 100 }, now, logger: silent }); await listings.init();
     const requests = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, now, logger: silent }); await requests.init();
     const services = new ServiceStore({ dataDir: cfg.dataDir, accounts, logger: silent }); await services.init();
-    const invites = new InviteStore({ dataDir: cfg.dataDir, accounts, limits: cfg.limits, now, logger: silent }); await invites.init();
+    const invites = new InviteStore({ dataDir: cfg.dataDir, accounts, limits: { ...cfg.limits, verifiedGapSec: gapSec }, now, logger: silent }); await invites.init();
     const store = await makeStore(cfg);
     const io = makeIo();
     const sent = [];
@@ -116,7 +116,7 @@ test('друг считается после первой карточки: ли
 
 test('HTTP: объявления и услуги упираются в лимит раздела, правка бесплатна, ошибка не тратит лимит', async () => {
     const { h, reg, invites, store } = await setup();
-    const a = await reg('Анна');
+    const a = await reg('Анна', false);   // у проверенного автора вместо суточного лимита пауза между карточками
     let r = await saveAd(h, a, 1); assert.equal(r.code, 200); assert.equal(r.body.quota.used, 1); assert.equal(r.body.quota.limit, 1);
     const id = r.body.listing.id;
     r = await saveAd(h, a, 2); assert.equal(r.code, 429); assert.equal(r.body.code, 'DAILY_LIMIT'); assert.equal(r.body.quota.left, 0);
@@ -145,7 +145,7 @@ test('HTTP: объявления и услуги упираются в лими�
 
 test('HTTP: друг по ссылке даёт хозяину +1, эндпоинт «Мои друзья» показывает код, список и лимиты', async () => {
     const { h, reg, invites, store } = await setup();
-    const a = await reg('Анна');
+    const a = await reg('Анна', false);
     let m = res(); await h.invitesMe(req({ headers: a.hdr }), m);
     assert.equal(m.body.ok, true);
     const code = m.body.code;
@@ -184,4 +184,25 @@ test('приглашения переживают перезапуск', async (
     assert.equal(again.bonus(a.id), 1);
     assert.equal(again.limitFor(a.id), 2);
     await store.close();
+});
+
+test('проверенный автор: первая карточка сразу, следующие через 3 часа, максимум 5 в день; «ищу» без паузы', async () => {
+    const { reg, h, clock, invites } = await setup(3 * 3600);
+    clock.t = Date.parse('2027-03-10T05:00:00Z');   // по местному времени ещё не вечер: пять интервалов умещаются в сутки
+    const u = await reg('Хозяин');
+    let r = await saveAd(h, u, 'a'); assert.equal(r.code, 200, JSON.stringify(r.body));
+    r = await saveAd(h, u, 'b');
+    assert.equal(r.code, 429); assert.equal(r.body.code, 'PACE_WAIT'); assert.ok(r.body.wait > 3 * 3600 - 5);
+    assert.match(r.body.message, /3 ч/);
+    clock.t += (3 * 3600 + 10) * 1000;
+    r = await saveAd(h, u, 'b'); assert.equal(r.code, 200, JSON.stringify(r.body));
+    // другой раздел считается отдельно
+    r = res(); await h.serviceSave(req({ headers: u.hdr, ip: '5.5.5.' + (++ipN), body: SVC('x') }), r);
+    assert.notEqual(r.body && r.body.code, 'PACE_WAIT');
+    // «ищу жильё» пауза не касается
+    r = await postReq(h, u, {}); assert.equal(r.code, 200, JSON.stringify(r.body));
+    // непроверенный пауз не получает, у него обычный дневной лимит
+    const w = await reg('Новичок', false);
+    r = await saveAd(h, w, 'n1'); assert.equal(r.code, 200);
+    r = await saveAd(h, w, 'n2'); assert.equal(r.body.code, 'DAILY_LIMIT');
 });

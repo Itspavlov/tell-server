@@ -19,6 +19,7 @@ const NEWBIE_TOTAL = 2;     // карточек за первые сутки ж�
 const DAY_MS = 24 * 3600 * 1000;
 const DAY_CAP = 5;          // максимум карточек в день на раздел
 const MAX_FRIENDS = 5;      // сколько друзей засчитывается
+const PACE_SEC = 3 * 3600;  // интервал между карточками проверенного автора в одном разделе
 const MAX_PENDING = 30;     // сколько регистраций по одной ссылке храним (чтобы список не раздувался)
 const CODE_RE = /^[A-Z2-9]{6,10}$/;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -37,13 +38,13 @@ class InviteStore {
         this.limits = limits;
         this.now = now;
         this.logger = logger;
-        this.data = { codes: {}, refs: {}, usage: {} };
+        this.data = { codes: {}, refs: {}, usage: {}, last: {} };
         this.byCode = new Map();
     }
 
     async init() {
         const d = await this.file.load({});
-        this.data = { codes: d.codes || {}, refs: d.refs || {}, usage: d.usage || {} };
+        this.data = { codes: d.codes || {}, refs: d.refs || {}, usage: d.usage || {}, last: d.last || {} };
         for (const [uid, code] of Object.entries(this.data.codes)) this.byCode.set(code, uid);
     }
 
@@ -139,14 +140,24 @@ class InviteStore {
         return SECTIONS.reduce((n, s) => n + (u[s] || 0), 0);
     }
 
-    reserve(userId, section) {
-        const q = this.quota(userId, section);
+    // Проверенный автор: суточный лимит заменён интервалом. Первая карточка сразу, каждая следующая в разделе не раньше чем через
+    // PACE_SEC (по умолчанию 3 часа), всего не больше DAY_CAP в день. Непроверенные идут через модерацию и обычный дневной лимит.
+    reserve(userId, section, { verified = false, pace = true } = {}) {
+        const q0 = this.quota(userId, section);
+        const q = verified ? { ...q0, limit: DAY_CAP, left: Math.max(0, DAY_CAP - q0.used), verified: true } : q0;
         if (q.left <= 0) return { ok: false, quota: q };
         if (this._isNewbie(userId) && this._usedToday(userId) >= NEWBIE_TOTAL) return { ok: false, quota: { ...q, left: 0, newbie: true } };
+        const gap = (this.limits.verifiedGapSec != null ? this.limits.verifiedGapSec : PACE_SEC) * 1000;
+        const lastAt = verified && this.data.last[userId] ? (this.data.last[userId][q.section] || 0) : 0;
+        if (verified && pace && gap > 0 && lastAt && this.now() - lastAt < gap) {
+            return { ok: false, wait: Math.ceil((lastAt + gap - this.now()) / 1000), quota: q };
+        }
         const prev = this.data.usage[userId] ? { ...this.data.usage[userId] } : undefined;
+        const prevLast = this.data.last[userId] ? { ...this.data.last[userId] } : undefined;
         const cur = prev && prev.day === q.day ? { ...prev } : { day: q.day };
         cur[q.section] = (cur[q.section] || 0) + 1;
         this.data.usage[userId] = cur;
+        if (verified && pace) this.data.last[userId] = { ...(prevLast || {}), [q.section]: this.now() };
         let undone = false;
         return {
             ok: true,
@@ -154,6 +165,7 @@ class InviteStore {
             undo: () => {
                 if (undone) return; undone = true;
                 if (prev === undefined) delete this.data.usage[userId]; else this.data.usage[userId] = prev;
+                if (verified && pace) { if (prevLast === undefined) delete this.data.last[userId]; else this.data.last[userId] = prevLast; }
             }
         };
     }

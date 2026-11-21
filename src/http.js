@@ -627,16 +627,16 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const ownerId = holdInfo && holdInfo.ownerId;
         let note = '';
         if (act === 'hok') {
-            const r = await reports.release(kind, id, { trust: true });
+            const r = await reports.release(kind, id);
             if (!r.ok) { await telegram.answer(cq.id, 'Не удалось'); return; }
             if (notifier && ownerId) {
                 const rq = kind === 'request' && requests ? requests.data.requests[id] : null;
                 const where = kind === 'listing' ? 'listing:' + id : kind === 'service' ? 'service:' + id : pubsOpen(rq && rq.section, rq && rq.kind);
-                notifier.notify([ownerId], { kind: 'listing', title: 'Публикация одобрена', body: 'Ваша карточка прошла проверку модератора, теперь её видят все. Следующие публикации появятся сразу.', open: where, tag: 'hold-ok-' + id });
+                notifier.notify([ownerId], { kind: 'listing', title: 'Ваша карточка одобрена', body: 'Пройдите верификацию проверенного пользователя, и для вас публикация будет моментальной.', open: where, tag: 'hold-ok-' + id });
             }
             if (kind === 'listing') io.emit('listing-changed', { id });
             if (kind === 'request') io.emit('request-changed', { id });
-            note = '✅ Одобрено, автор теперь доверенный';
+            note = '✅ Одобрено';
         } else {
             let r = { ok: false };
             const rqBefore = kind === 'request' && requests ? requests.data.requests[id] : null;
@@ -771,8 +771,11 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
 
     // ---------- лимиты публикаций и приглашения друзей ----------
     const SECTION_TITLE = { housing: 'Жильё', work: 'Работа', trips: 'Поездки', services: 'Развлечения' };
+    const isVerified = (user, sec) => !!(accounts && accounts.verifiedOf && accounts.verifiedOf(user.id, sec));
     const sectionOf = (raw) => (['housing', 'work', 'trips', 'services'].includes(raw) ? raw : 'housing');
-    function dailyLimit(res, q) {
+    function paceFmt(sec) { const m = Math.ceil(sec / 60), h = Math.floor(m / 60), mm = m % 60; return h ? h + ' ч' + (mm ? ' ' + mm + ' мин' : '') : mm + ' мин'; }
+    function dailyLimit(res, q, wait) {
+        if (wait > 0) return res.status(429).json({ ok: false, code: 'PACE_WAIT', wait, message: `Следующую карточку в разделе «${SECTION_TITLE[q.section]}» можно опубликовать через ${paceFmt(wait)}. Так ваши объявления чаще остаются на виду`, quota: q });
         const more = q.limit < 5 ? '. Пригласите друга: за каждого, кто зарегистрируется и опубликует карточку, лимит растёт на одну в день' : '. Это максимум, новые можно завтра';
         if (q.newbie) return res.status(429).json({ ok: false, code: 'DAILY_LIMIT', message: 'Новым аккаунтам в первые сутки можно опубликовать до 2 карточек. Остальное можно будет завтра', quota: q });
         return res.status(429).json({ ok: false, code: 'DAILY_LIMIT', message: `Сегодня в разделе «${SECTION_TITLE[q.section]}» вы уже опубликовали ${q.used} из ${q.limit}${more}`, quota: q });
@@ -887,14 +890,14 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             const c = checkContent(sectionOf(b.section), { title: b.title, text: b.text });
             if (!c.ok) return res.status(400).json(c);
         }
-        const hold = invites ? invites.reserve(user.id, sectionOf(req.body && req.body.section)) : null;
-        if (hold && !hold.ok) return dailyLimit(res, hold.quota);
+        const hold = invites ? invites.reserve(user.id, sectionOf(req.body && req.body.section), { verified: isVerified(user, sectionOf(req.body && req.body.section)), pace: (req.body && req.body.kind || 'seek') !== 'seek' }) : null;
+        if (hold && !hold.ok) return dailyLimit(res, hold.quota, hold.wait);
         const r = await requests.create(user, req.body);
         if (!r.ok) { if (hold) hold.undo(); return requestFail(res, r); }
         if (invites) { await invites.flush(); await afterPublish(user); }
-        // Работа и Поездки: первая карточка нового автора ждёт модератора (запросы на жильё идут сразу: это туристы)
+        // Непроверенный автор: любая карточка ждёт модератора, кроме «ищу» (ищу жильё, работу, поездку: это люди, а не объявления)
         const rsec = sectionOf(req.body && req.body.section);
-        const held = (rsec === 'work' || rsec === 'trips') ? await holdForReview('request', r.request.id, user, { title: r.request.title || r.request.text, price: r.request.budget ? r.request.budget + ' ₽' : '', text: r.request.text, section: rsec, offer: r.request.kind === 'offer' }) : false;
+        const held = r.request.kind !== 'seek' ? await holdForReview('request', r.request.id, user, { title: r.request.title || r.request.text, price: r.request.budget ? r.request.budget + ' ₽' : '', text: r.request.text, section: rsec, offer: r.request.kind === 'offer' }) : false;
         io.emit('request-changed', { id: r.request.id });
         const found = listings ? requests.countMatches(requests.data.requests[r.request.id], listings) : 0;
         const alike = listings ? requests.countSimilar(requests.data.requests[r.request.id], listings) : 0;
@@ -1096,13 +1099,12 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
 
     // куда ведёт уведомление о карточке в «Моих публикациях»: раздел и вкладка (объявления / запросы)
     const pubsOpen = (section, kind) => 'pubs:' + (['housing', 'work', 'trips'].includes(section) ? section : 'housing') + ':' + (section === 'housing' ? (kind === 'offer' ? 'ads' : 'req') : (kind === 'offer' ? 'ads' : 'req'));
-    const HOLD_MSG = 'Спасибо! Первая публикация проверяется модератором, обычно это быстро. После одобрения её увидят все. Следующие публикации пойдут сразу.';
+    const HOLD_MSG = 'Спасибо! Карточка на проверке у модератора, после одобрения её увидят все. Пройдите верификацию проверенного пользователя, и публикация будет моментальной.';
     // Первая карточка автора без проверки («Проверенный» или уже одобренный автор публикует сразу).
     // Работает только если подключён Telegram, иначе одобрить было бы негде.
     async function holdForReview(kind, id, user, info) {
         try {
             if (!reports || !telegram || !telegram.enabled()) return false;
-            if (reports.isTrusted(user.id)) return false;
             if (accounts && accounts.verifiedOf && accounts.verifiedOf(user.id, kind === 'service' ? 'services' : kind === 'request' ? info.section : 'housing')) return false;
             if (!(await reports.hold(kind, id, user.id))) return false;
             let photo = '';
@@ -1137,8 +1139,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             const c = checkContent('housing', { title: b.title, text: b.description, priceNum: b.priceNum, long });
             if (!c.ok) return res.status(400).json(c);
         }
-        const hold = invites && isNewAd ? invites.reserve(user.id, 'housing') : null;
-        if (hold && !hold.ok) return dailyLimit(res, hold.quota);
+        const hold = invites && isNewAd ? invites.reserve(user.id, 'housing', { verified: isVerified(user, 'housing') }) : null;
+        if (hold && !hold.ok) return dailyLimit(res, hold.quota, hold.wait);
         const r = await listings.save(user, req.body);
         if (!r.ok) { if (hold) hold.undo(); return listingFail(res, r); }
         if (invites && r.created) { await invites.flush(); await afterPublish(user); }
@@ -1417,8 +1419,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
             const c = checkContent('services', { title: b.title, text: b.text });
             if (!c.ok) return res.status(400).json(c);
         }
-        const hold = invites && isNewSvc ? invites.reserve(user.id, 'services') : null;
-        if (hold && !hold.ok) return dailyLimit(res, hold.quota);
+        const hold = invites && isNewSvc ? invites.reserve(user.id, 'services', { verified: isVerified(user, 'services') }) : null;
+        if (hold && !hold.ok) return dailyLimit(res, hold.quota, hold.wait);
         const r = await services.save(user, req.body);
         if (!r.ok) { if (hold) hold.undo(); return serviceFail(res, r); }
         if (invites && r.created) { await invites.flush(); await afterPublish(user); }
