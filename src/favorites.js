@@ -21,11 +21,15 @@ class FavoriteStore {
 
     ids(userId) { return (this.data.users[userId] || []).slice(); }
 
-    // id объявления (l_…) или готовой услуги (s_…)
-    async set(userId, listingId, on, listings, services = null) {
-        const isSvc = typeof listingId === 'string' && listingId.startsWith('s_');
+    // id объявления (l_…), готовой услуги (s_…) или карточки поездки (r_…)
+    async set(userId, listingId, on, listings, services = null, requests = null) {
         if (typeof listingId !== 'string') return fail('LISTING_NOT_FOUND');
-        if (isSvc ? !(services && services.light(listingId)) : !listings.rawById(listingId)) return fail(isSvc ? 'SERVICE_NOT_FOUND' : 'LISTING_NOT_FOUND');
+        const isSvc = listingId.startsWith('s_'), isReq = listingId.startsWith('r_');
+        if (isReq) {
+            const rq = requests && requests.get(listingId, userId);
+            // убрать из избранного можно всегда, добавить — только живую карточку поездки
+            if (on && !(rq && rq.section === 'trips' && rq.status === 'active')) return fail('REQUEST_NOT_FOUND');
+        } else if (isSvc ? !(services && services.light(listingId)) : !listings.rawById(listingId)) return fail(isSvc ? 'SERVICE_NOT_FOUND' : 'LISTING_NOT_FOUND');
         const list = this.data.users[userId] || [];
         const had = list.includes(listingId);
         if (on && had) return { ok: true, ids: this.ids(userId) };
@@ -44,7 +48,7 @@ class FavoriteStore {
 
     // Карточки избранного; удалённые объявления отбрасываются
     list(userId, listings) {
-        return this.ids(userId).filter(id => !id.startsWith('s_')).map(id => listings.rawById(id)).filter(Boolean).map(l => listings.light(l));
+        return this.ids(userId).filter(id => !id.startsWith('s_') && !id.startsWith('r_')).map(id => listings.rawById(id)).filter(Boolean).map(l => listings.light(l));
     }
 
     // Избранные готовые услуги (в том же порядке, удалённые отбрасываются)
@@ -52,6 +56,11 @@ class FavoriteStore {
         return this.ids(userId).filter(id => id.startsWith('s_')).map(id => services.light(id, viewerId)).filter(Boolean);
     }
 }
+
+// Избранные карточки поездок (удалённые и закрытые отбрасываются)
+FavoriteStore.prototype.listRequests = function (userId, requests, viewerId = null) {
+    return this.ids(userId).filter(id => id.startsWith('r_')).map(id => requests.get(id, viewerId)).filter(r => r && r.status === 'active' && r.section === 'trips');
+};
 
 FavoriteStore.prototype.eraseUser = async function (userId) {
     const prev = this.data.users[userId];

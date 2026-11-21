@@ -996,7 +996,7 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const user = needUser(req, res); if (!user) return;
         const rl = limiters.history.hit(user.id);
         if (!rl.ok) return limited(res, rl);
-        res.json({ ok: true, ids: favorites.ids(user.id), listings: favorites.list(user.id, listings), services: services ? withOwnerRating(favorites.listServices(user.id, services, user.id)) : [] });
+        res.json({ ok: true, ids: favorites.ids(user.id), listings: favorites.list(user.id, listings), services: services ? withOwnerRating(favorites.listServices(user.id, services, user.id)) : [], requests: requests ? withOwnerRating(favorites.listRequests(user.id, requests, user.id)) : [] });
     }
 
     async function favSet(req, res) {
@@ -1005,8 +1005,8 @@ function createHandlers({ cfg, store, admin, accounts, listings, requests = null
         const rl = limiters.requestWrite.hit(user.id);
         if (!rl.ok) return limited(res, rl);
         const b = req.body && typeof req.body === 'object' ? req.body : {};
-        const r = await favorites.set(user.id, b.id, b.on === true, listings, services);
-        if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' || r.code === 'SERVICE_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
+        const r = await favorites.set(user.id, b.id, b.on === true, listings, services, requests);
+        if (!r.ok) return res.status(r.code === 'LISTING_NOT_FOUND' || r.code === 'SERVICE_NOT_FOUND' || r.code === 'REQUEST_NOT_FOUND' ? 404 : r.code === 'STORE_UNAVAILABLE' ? 503 : 400).json({ ok: false, code: r.code, message: r.message });
         res.json({ ok: true, ids: r.ids });
     }
 
