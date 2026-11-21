@@ -24,7 +24,8 @@ const STATUSES = ['active', 'found', 'closed'];   // «истёк» вычисл
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY = 86400000;
 const ART_RE = /^a(0[1-9]|[1-6][0-9]|70)$/;                // картинка-иллюстрация вакансии из готовой библиотеки (a01…a70)
-const PAY_PERIODS = ['daily', 'weekly', 'biweekly', 'monthly'];   // как часто платят: каждый день, раз в неделю, раз в две недели, раз в месяц
+const PAY_PERIODS = ['daily', 'weekly', 'biweekly', 'monthly'];
+const VEHICLES = ['car', 'minivan', 'microbus', 'bus'];   // тип авто в поездках: легковая, минивен, микроавтобус, автобус   // как часто платят: каждый день, раз в неделю, раз в две недели, раз в месяц
 const MAX_CAR_PHOTOS = 3;                               // фото автомобиля в карточке «Предлагаю поездку»
 
 const text = (v, max) => { const r = normalizeText(typeof v === 'string' ? v : '', max); return r.ok ? r.value : ''; };
@@ -71,10 +72,19 @@ function cleanRequest(raw, today) {
         else if (typeof raw.art === 'string' && ART_RE.test(raw.art)) value.art = raw.art;
         else return fail('BAD_REQUEST');
     }
-    // работа: телефон (его можно скрыть), а у «Найти сотрудника» ещё период выплат и вилка зарплаты «от и до»
-    if (section === 'work') {
+    // поездки: тип авто, «с животным», «багаж» (и у «Найти транспорт», и у «Найти пассажиров»)
+    if (section === 'trips') {
+        if (raw.vehicle !== undefined && raw.vehicle !== '' && raw.vehicle !== null && !VEHICLES.includes(raw.vehicle)) return fail('BAD_REQUEST');
+        const yes = (x) => x === true || x === 'true' || x === 1 || x === '1';
+        value.vehicle = VEHICLES.includes(raw.vehicle) ? raw.vehicle : ''; value.animal = yes(raw.animal); value.luggage = yes(raw.luggage);
+    }
+    // телефон (его можно скрыть): у работы и у «Предлагаю поездку»
+    if (section === 'work' || (section === 'trips' && kind === 'offer')) {
         const ph = cleanPhone(raw.phone); if (!ph.ok) return fail('SERVICE_PHONE');
         value.phone = ph.value; value.hidePhone = !!ph.value && (raw.hidePhone === true || raw.hidePhone === 'true' || raw.hidePhone === 1 || raw.hidePhone === '1');
+    }
+    // у «Найти сотрудника» ещё период выплат и вилка зарплаты «от и до»
+    if (section === 'work') {
         if (kind === 'offer') {
             const bad = (x) => x !== undefined && x !== '' && x !== null && num(x, 1, 10_000_000) === null;
             if (bad(raw.salaryFrom) || bad(raw.salaryTo)) return fail('BAD_REQUEST');
@@ -89,7 +99,7 @@ function cleanRequest(raw, today) {
     return { ok: true, value };
 }
 
-const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.negotiable ? 'neg' : '', v.pets ? 'pets' : '', v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
+const sig = (v) => crypto.createHash('sha1').update([v.section, v.kind, v.title, v.category, v.city, v.district, v.dateFrom, v.dateTo, v.guests, v.budget, v.negotiable ? 'neg' : '', v.pets ? 'pets' : '', v.vehicle || '', v.animal ? 'animal' : '', v.luggage ? 'lug' : '', v.text].map(x => String(x === null ? '' : x).toLowerCase()).join('|')).digest('hex');
 
 class RequestStore {
     constructor({ dataDir, limits, now = Date.now, logger = console, fsImpl, dayOf }) {
@@ -125,6 +135,7 @@ class RequestStore {
             photos: Array.isArray(r.photos) ? r.photos : [],
             phone: r.phone && (!r.hidePhone || viewerId === r.ownerId) ? r.phone : '', hidePhone: !!r.hidePhone,
             salaryFrom: r.salaryFrom || null, salaryTo: r.salaryTo || null, payPeriod: r.payPeriod || '',
+            vehicle: VEHICLES.includes(r.vehicle) ? r.vehicle : '', animal: !!r.animal, luggage: !!r.luggage,
             art: typeof r.art === 'string' && ART_RE.test(r.art) ? r.art : ''
         };
     }
@@ -389,4 +400,4 @@ RequestStore.prototype.eraseUser = async function (userId) {
     return mineReq.length + offers.length;
 };
 
-module.exports = { RequestStore, cleanRequest, MAX_CAR_PHOTOS, PAY_PERIODS };
+module.exports = { RequestStore, cleanRequest, MAX_CAR_PHOTOS, PAY_PERIODS, VEHICLES };

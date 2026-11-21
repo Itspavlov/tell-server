@@ -39,6 +39,17 @@ test('ищу работу и другие разделы: период и вил
     assert.equal(trips.value.salaryFrom, undefined);
 });
 
+test('поездки: тип авто, животное и багаж', () => {
+    const a = cleanRequest({ section: 'trips', kind: 'seek', title: 'Нужен транспорт', vehicle: 'minivan', animal: true, luggage: 'true', negotiable: true }, T);
+    assert.equal(a.ok, true); assert.equal(a.value.vehicle, 'minivan'); assert.equal(a.value.animal, true); assert.equal(a.value.luggage, true);
+    assert.equal(a.value.negotiable, true); assert.equal(a.value.budget, null);
+    const b = cleanRequest({ section: 'trips', kind: 'offer', title: 'Еду', vehicle: 'bus' }, T);
+    assert.equal(b.value.vehicle, 'bus'); assert.equal(b.value.animal, false); assert.equal(b.value.luggage, false);
+    assert.equal(cleanRequest({ section: 'trips', kind: 'offer', title: 'Еду', vehicle: 'tank' }, T).ok, false);
+    const c = cleanRequest({ section: 'work', kind: 'seek', title: 'Работа', vehicle: 'bus', animal: true }, T);
+    assert.equal(c.value.vehicle, undefined); assert.equal(c.value.animal, undefined);
+});
+
 test('скрытый телефон видит только владелец', async () => {
     const cfg = makeCfg();
     const store = new RequestStore({ dataDir: cfg.dataDir, limits: cfg.limits, logger: silent });
