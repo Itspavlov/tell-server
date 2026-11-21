@@ -191,4 +191,4 @@ ServiceStore.prototype.eraseUser = async function (userId) {
     return gone.length;
 };
 
-module.exports = { ServiceStore, cleanService, TAGS, UNITS };
+module.exports = { ServiceStore, cleanService, cleanPhone, TAGS, UNITS };
