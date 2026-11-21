@@ -32,8 +32,11 @@ test('ищу работу и другие разделы: период и вил
     const seek = cleanRequest(W({ kind: 'seek', phone: '+79001234567', salaryFrom: 1000, payPeriod: 'daily' }), T);
     assert.equal(seek.value.phone, '+79001234567');
     assert.equal(seek.value.salaryFrom, undefined);
-    const trips = cleanRequest({ section: 'trips', kind: 'offer', title: 'Еду', phone: '+79001234567' }, T);
-    assert.equal(trips.value.phone, undefined);
+    const tripsSeek = cleanRequest({ section: 'trips', kind: 'seek', title: 'Ищу', phone: '+79001234567' }, T);
+    assert.equal(tripsSeek.value.phone, undefined);
+    const trips = cleanRequest({ section: 'trips', kind: 'offer', title: 'Еду', phone: '8 900 123-45-67', hidePhone: true }, T);
+    assert.equal(trips.value.phone, '+79001234567'); assert.equal(trips.value.hidePhone, true);
+    assert.equal(trips.value.salaryFrom, undefined);
 });
 
 test('скрытый телефон видит только владелец', async () => {

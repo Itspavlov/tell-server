@@ -15,6 +15,7 @@ const { JsonFile } = require('./jsonfile');
 const { normalizeText, fail } = require('./validate');
 const { matches, similar } = require('./match');
 const { ID_RE: MEDIA_ID_RE } = require('./media');
+const { cleanPhone } = require('./services');
 
 const CATEGORIES = ['apartment', 'house', 'hotel', 'room', 'guest'];
 const SECTIONS = ['housing', 'work', 'trips', 'services'];   // раздел, где лежит карточка
@@ -23,6 +24,7 @@ const STATUSES = ['active', 'found', 'closed'];   // «истёк» вычисл
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY = 86400000;
 const ART_RE = /^a(0[1-9]|[1-6][0-9]|70)$/;                // картинка-иллюстрация вакансии из готовой библиотеки (a01…a70)
+const PAY_PERIODS = ['daily', 'weekly', 'biweekly', 'monthly'];   // как часто платят: каждый день, раз в неделю, раз в две недели, раз в месяц
 const MAX_CAR_PHOTOS = 3;                               // фото автомобиля в карточке «Предлагаю поездку»
 
 const text = (v, max) => { const r = normalizeText(typeof v === 'string' ? v : '', max); return r.ok ? r.value : ''; };
@@ -69,6 +71,21 @@ function cleanRequest(raw, today) {
         else if (typeof raw.art === 'string' && ART_RE.test(raw.art)) value.art = raw.art;
         else return fail('BAD_REQUEST');
     }
+    // работа: телефон (его можно скрыть), а у «Найти сотрудника» ещё период выплат и вилка зарплаты «от и до»
+    if (section === 'work') {
+        const ph = cleanPhone(raw.phone); if (!ph.ok) return fail('SERVICE_PHONE');
+        value.phone = ph.value; value.hidePhone = !!ph.value && (raw.hidePhone === true || raw.hidePhone === 'true' || raw.hidePhone === 1 || raw.hidePhone === '1');
+        if (kind === 'offer') {
+            const bad = (x) => x !== undefined && x !== '' && x !== null && num(x, 1, 10_000_000) === null;
+            if (bad(raw.salaryFrom) || bad(raw.salaryTo)) return fail('BAD_REQUEST');
+            const sf = negotiable ? null : num(raw.salaryFrom, 1, 10_000_000), st = negotiable ? null : num(raw.salaryTo, 1, 10_000_000);
+            if (sf !== null && st !== null && st < sf) return fail('BAD_REQUEST');
+            value.salaryFrom = sf; value.salaryTo = st;
+            if (sf !== null || st !== null) value.budget = sf !== null ? sf : st;     // для списков и сортировки
+            if (raw.payPeriod !== undefined && raw.payPeriod !== '' && !PAY_PERIODS.includes(raw.payPeriod)) return fail('BAD_REQUEST');
+            value.payPeriod = PAY_PERIODS.includes(raw.payPeriod) ? raw.payPeriod : '';
+        }
+    }
     return { ok: true, value };
 }
 
@@ -106,6 +123,8 @@ class RequestStore {
             section: r.section || 'housing', kind: r.kind || 'seek', title: r.title || '', category: r.category, city: r.city, district: r.district, dateFrom: r.dateFrom, dateTo: r.dateTo,
             guests: r.guests, budget: r.budget, negotiable: !!r.negotiable, pets: !!r.pets, text: r.text, notify: r.notify !== false,
             photos: Array.isArray(r.photos) ? r.photos : [],
+            phone: r.phone && (!r.hidePhone || viewerId === r.ownerId) ? r.phone : '', hidePhone: !!r.hidePhone,
+            salaryFrom: r.salaryFrom || null, salaryTo: r.salaryTo || null, payPeriod: r.payPeriod || '',
             art: typeof r.art === 'string' && ART_RE.test(r.art) ? r.art : ''
         };
     }
@@ -370,4 +389,4 @@ RequestStore.prototype.eraseUser = async function (userId) {
     return mineReq.length + offers.length;
 };
 
-module.exports = { RequestStore, cleanRequest, MAX_CAR_PHOTOS };
+module.exports = { RequestStore, cleanRequest, MAX_CAR_PHOTOS, PAY_PERIODS };
