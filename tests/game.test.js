@@ -126,3 +126,39 @@ test('нельзя быть в двух комнатах, выйти и созд
     a.fire('g-leave');
     assert.equal(a.fire('g-create', {}).ok, true);
 });
+
+test('действия с числами: данные округляются, мусор отбрасывается', () => {
+    const L = layer(), a = connect(L), b = connect(L, '2.2.2.2');
+    const { code } = a.fire('g-create', { role: 'seller' }); b.fire('g-join', { code });
+    a.fire('g-ev', { t: 'act', a: 'throw', d: [1, 2.3456] });
+    assert.deepEqual(b.last('g-ev'), { t: 'act', a: 'throw', d: [1, 2.35] });
+    a.fire('g-ev', { t: 'act', a: 'bite', d: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] });
+    assert.equal(b.last('g-ev').d.length, 8);
+    const n = b.got.length;
+    a.fire('g-ev', { t: 'act', a: 'bite', d: ['x'] });
+    a.fire('g-ev', { t: 'act', a: 'bite', d: [1e9] });
+    assert.equal(b.got.length, n);
+    b.fire('g-ev', { t: 'act', a: 'push' });
+    assert.deepEqual(a.last('g-ev'), { t: 'act', a: 'push' });
+});
+
+test('снимок мира идёт только от продавца и только числами', () => {
+    const L = layer(), a = connect(L), b = connect(L, '2.2.2.2');
+    const { code } = a.fire('g-create', { role: 'seller' }); b.fire('g-join', { code });
+    a.fire('g-w', { w: [1, 2, 3.14159] });
+    assert.deepEqual(b.last('g-w'), { w: [1, 2, 3.14] });
+    b.fire('g-w', { w: [9, 9] });
+    assert.equal(a.last('g-w'), undefined);
+    const n = b.got.length;
+    a.fire('g-w', { w: new Array(100).fill(1) });
+    a.fire('g-w', { w: ['a'] });
+    a.fire('g-w', 'x');
+    assert.equal(b.got.length, n);
+});
+
+test('частота снимков мира ограничена', () => {
+    const L = layer(), a = connect(L), b = connect(L, '2.2.2.2');
+    const { code } = a.fire('g-create', { role: 'seller' }); b.fire('g-join', { code });
+    for (let i = 0; i < 200; i++) a.fire('g-w', { w: [i] });
+    assert.ok(b.got.filter((g) => g[0] === 'g-w').length <= 16);
+});

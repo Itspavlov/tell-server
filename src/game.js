@@ -9,8 +9,9 @@
 //                     g-join {code, want?} (ack {ok, role, peer, peerRole})
 //                     g-leave
 //                     g-s   {x, z, yaw, m, c, r}  состояние персонажа (без ack)
-//                     g-ev  {t:'say', text} | {t:'act', a}  событие
-//   сервер -> клиент: g-peer {present, role}, g-s, g-ev
+//                     g-ev  {t:'say', text} | {t:'act', a, d?:[числа]}  событие
+//                     g-w   {w:[числа]}  снимок мира (лодка и акулы), только от продавца
+//   сервер -> клиент: g-peer {present, role}, g-s, g-ev, g-w
 //
 // Логика не зависит от настоящей библиотеки: socket и время передаются
 // снаружи, поэтому проверяется тестами с поддельными объектами.
@@ -24,7 +25,8 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // без похожих 
 const CODE_LEN = 4;
 const MODES = new Set(['idle', 'walk', 'dance', 'sit', 'cheer', 'clap', 'wave', 'flail']);
 const CLIP_RE = /^[a-z0-9_]{1,16}$/;
-const ACTS = new Set(['give', 'take', 'wave', 'hello']);
+const ACTS = new Set(['give', 'take', 'wave', 'hello', 'ask', 'depart', 'feed', 'throw', 'push', 'fell', 'landed', 'dock', 'bite', 'home', 'sync']);
+const MAX_D = 8, MAX_W = 48;
 
 function createGameLayer({ cfg = {}, logger = console, now = Date.now, randomInt = crypto.randomInt, limits = {} } = {}) {
     const L = Object.assign({
@@ -33,7 +35,8 @@ function createGameLayer({ cfg = {}, logger = console, now = Date.now, randomInt
         idleTtlMs: 3 * 3600_000,  // комната без движения
         createPerMin: 6,          // создание комнат с одного соединения
         statePerSec: 30,          // позы
-        eventPerSec: 6,           // реплики и действия
+        eventPerSec: 10,          // реплики и действия
+        worldPerSec: 15,          // снимки мира
         maxPerIp: 8,              // соединений /game с одного адреса
         maxText: 80,
         bound: 300                // координаты по модулю не больше
@@ -75,7 +78,7 @@ function createGameLayer({ cfg = {}, logger = console, now = Date.now, randomInt
         perIp.set(ip, cur + 1);
 
         let room = null, role = null, violations = 0;
-        const okState = bucket(L.statePerSec, 1000), okEvent = bucket(L.eventPerSec, 1000), okCreate = bucket(L.createPerMin, 60_000);
+        const okState = bucket(L.statePerSec, 1000), okEvent = bucket(L.eventPerSec, 1000), okWorld = bucket(L.worldPerSec, 1000), okCreate = bucket(L.createPerMin, 60_000);
         const violation = () => { if (++violations > 300) socket.disconnect(true); };
         const reply = (ack, res) => { if (typeof ack === 'function') ack(res); };
         const peerOf = () => (room ? room.seats[role === 'seller' ? 'buyer' : 'seller'] : null);
@@ -155,8 +158,26 @@ function createGameLayer({ cfg = {}, logger = console, now = Date.now, randomInt
                 const text = clean(d.text, L.maxText);
                 if (text) peer.emit('g-ev', { t: 'say', text });
             } else if (d.t === 'act' && ACTS.has(d.a)) {
-                peer.emit('g-ev', { t: 'act', a: d.a });
+                const ev = { t: 'act', a: d.a };
+                if (Array.isArray(d.d)) {
+                    const arr = d.d.slice(0, MAX_D).map(num);
+                    if (arr.some((v) => v === null)) return violation();
+                    ev.d = arr;
+                }
+                peer.emit('g-ev', ev);
             } else violation();
+        });
+
+        // снимок мира: лодка и акулы. Считает продавец, покупатель только рисует
+        socket.on('g-w', (d) => {
+            if (!room || role !== 'seller') return;
+            if (!okWorld()) return;
+            if (!d || !Array.isArray(d.w) || d.w.length > MAX_W) return violation();
+            const w = d.w.map(num);
+            if (w.some((v) => v === null)) return violation();
+            room.last = now();
+            const peer = peerOf();
+            if (peer) peer.emit('g-w', { w });
         });
 
         socket.on('disconnect', () => {
