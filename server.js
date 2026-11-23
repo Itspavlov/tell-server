@@ -12,6 +12,7 @@ const { createAdmin } = require('./src/admin');
 const { createLimiters } = require('./src/rateLimit');
 const { createApp } = require('./src/http');
 const { createSocketLayer } = require('./src/sockets');
+const { createGameLayer } = require('./src/game');
 const { PushStore, createPushSender } = require('./src/push');
 const { createNotifier } = require('./src/notify');
 const { AccountStore } = require('./src/accounts');
@@ -115,6 +116,11 @@ async function start(env = process.env, logger = console) {
     const notifier = createNotifier({ io, push, inbox, logger });
     layer = createSocketLayer({ io, cfg, store, accounts, dms, groups, adReacts, limiters, notifier, logger });
     io.on('connection', layer.onConnection);
+    // игровые комнаты на двоих (отдельное пространство имён, мессенджера не касается)
+    const game = createGameLayer({ cfg, logger });
+    io.of('/game').on('connection', game.onConnection);
+    const gameSweeper = setInterval(() => game.sweep(), 5 * 60 * 1000);
+    gameSweeper.unref();
 
     const app = createApp({ express, cors, cfg, store, admin, accounts, listings, requests, inbox, favorites, reviews, services, dviz, afisha, site, stats, searches, media, dms, weather, invites, groups, adReacts, reports, mailer, geocoder, telegram, limiters, io, push, pushStore, notifier, logger });
     server.on('request', app);
